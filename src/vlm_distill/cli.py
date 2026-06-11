@@ -15,7 +15,7 @@ from .stage_visual_switch_logits import create_visual_switch_dataset
 def main() -> None:
     parser = argparse.ArgumentParser(prog="vlm-distill")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for command in ("validate-data", "label", "teacher-label", "switch-label", "train", "evaluate"):
+    for command in ("validate-data", "label", "teacher-logits", "switch-logits", "train", "evaluate"):
         command_parser = subparsers.add_parser(command)
         command_parser.add_argument("--config", type=Path, required=True)
 
@@ -41,12 +41,12 @@ def main() -> None:
         print(f"OK distillation dataset written: {output_path}")
         return
 
-    if args.command == "teacher-label":
+    if args.command == "teacher-logits":
         output_path = create_teacher_logits_dataset(config)
         print(f"OK teacher logits written: {output_path}")
         return
 
-    if args.command == "switch-label":
+    if args.command == "switch-logits":
         output_path = create_visual_switch_dataset(config)
         print(f"OK visual-switch logits written: {output_path}")
         return

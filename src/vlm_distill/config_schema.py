@@ -21,6 +21,10 @@ class TeacherConfig:
     model_name: str
     backend: str = "mock"
     device_map: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+    ollama_host: str = "http://localhost:11434"
+    request_timeout: int = 120
     torch_dtype: str | None = None
     temperature: float = 0.2
     max_new_tokens: int = 128

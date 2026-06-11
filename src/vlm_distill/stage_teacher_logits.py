@@ -80,7 +80,7 @@ def create_teacher_logits_dataset(config: PipelineConfig) -> Path:
         target_text = str(row.get(target_field) or sample.answer or "")
         if not target_text:
             raise ValueError(
-                f"Sample {sample.id} is missing '{target_field}'. Run `label` before `teacher-label`."
+                f"Sample {sample.id} is missing '{target_field}'. Run `label` before `teacher-logits`."
             )
         row.update(generator.generate_for_sample(sample, target_text=target_text))
         output_rows.append(row)

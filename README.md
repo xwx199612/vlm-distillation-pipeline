@@ -67,6 +67,43 @@ vlm-distill evaluate --config configs/mock.yaml
 
 請依 GPU VRAM 調整 `configs/*.yaml` 的 batch size、LoRA rank、quantization 與 gradient checkpointing。
 
+## Teacher Backends
+
+Hugging Face online model id:
+
+```yaml
+teacher:
+  backend: hf
+  model_name: Qwen/Qwen2.5-VL-7B-Instruct
+```
+
+Hugging Face local folder:
+
+```yaml
+teacher:
+  backend: hf
+  model_name: D:/models/Qwen2.5-VL-7B-Instruct
+```
+
+OpenAI-compatible local server:
+
+```yaml
+teacher:
+  backend: openai_compatible
+  model_name: Qwen/Qwen2.5-VL-7B-Instruct
+  base_url: http://localhost:1234/v1
+  api_key: local-test-key
+```
+
+Ollama local model:
+
+```yaml
+teacher:
+  backend: ollama
+  model_name: llava:7b
+  ollama_host: http://localhost:11434
+```
+
 ## Project Layout
 
 ```text
