@@ -162,12 +162,12 @@ def _extract_elements(row: dict[str, Any]) -> list[Any]:
     if not isinstance(parsed, dict):
         return []
 
-    elements = parsed.get("elements", [])
+    for key in ("elements", "selectable_elements"):
+        elements = parsed.get(key, [])
+        if isinstance(elements, list):
+            return elements
 
-    if not isinstance(elements, list):
-        return []
-
-    return elements
+    return []
 
 
 def _parse_json_like(value: Any) -> dict[str, Any] | None:

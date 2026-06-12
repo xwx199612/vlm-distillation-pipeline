@@ -1,2 +1,2 @@
-{"id":"ground-001","image":"examples/images/sample_001.jpg","task":"grounding","target_label":"cup","target_type":"object","metadata":{}}
-{"id":"ground-002","image":"examples/images/sample_002.jpg","task":"grounding","target_label":"bicycle","target_type":"object","metadata":{}}
+{"id":"ground-001","image":"examples/images/sample_001.jpg","task":"grounding","target_label":"cup","target_type":"object","source_screen_parsing_id":"screen-001","metadata":{}}
+{"id":"ground-002","image":"examples/images/sample_002.jpg","task":"grounding","target_label":"bicycle","target_type":"object","source_screen_parsing_id":"screen-002","metadata":{}}

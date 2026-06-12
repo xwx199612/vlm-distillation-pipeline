@@ -334,6 +334,7 @@ into:
 {
   "target_label":"YouTube",
   "target_type":"object",
+  "source_screen_parsing_id":"screen-001",
   "metadata":{}
 }
 ```
