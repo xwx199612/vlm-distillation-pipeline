@@ -16,7 +16,7 @@ teacher:
   torch_dtype: float16
   quantization: 4bit
   temperature: 0.0
-  max_new_tokens: 256
+  max_new_tokens: 1024
 
 student:
   model_name: mock-vlm-student
@@ -38,18 +38,55 @@ training:
 distillation:
   target_field: student_target
   prompt_template: |
-    You are a GUI screen parsing assistant.
+    You are an Android TV GUI automation assistant.
 
-    Analyze this device screenshot and list all visible UI icons, buttons, menu items, and actionable elements.
+    Analyze this screenshot for remote-control navigation.
 
-    Instruction: {instruction}
+    Android TV screens may have hierarchical focus.
 
-    Return only valid JSON:
+    Example:
+    - A top navigation tab such as Search, Home, Shop, Discover, or Apps may be selected.
+    - Inside the selected tab, a content item such as YouTube or Netflix may also be focused.
+    - If both exist, the content item is the element activated by OK / Enter, while the top tab is the active navigation context.
+
+    Identify:
+    1. The active navigation area.
+    2. The active top-level tab if visible.
+    3. The currently focused actionable element.
+    4. All selectable UI elements visible on the screen.
+
+    Focus rule:
+    - focused_element means the item that would be activated if the user presses OK / Enter now.
+    - active_top_tab means the selected top navigation tab, such as Home or Apps.
+    - If only the top tab is selected and no content item is focused, focused_element should be the top tab.
+    - If a content item is focused under a selected tab, focused_element should be the content item and active_top_tab should still record the selected tab.
+
+    Focus indicators may include:
+    - bright border
+    - colored outline
+    - glow effect
+    - enlarged tile
+    - highlighted background
+    - selected tab underline
+    - selection rectangle
+
+    Ignore:
+    - movie descriptions
+    - recommendation text
+    - advertisement text
+    - long informational content
+
+    Return raw JSON only.
+    Do not explain.
+    Do not use markdown.
+
+    JSON schema:
     {{
-      "screen_type": "",
-      "elements": [
-        {{"label": "", "type": "icon|button|menu_item|text|toggle|input|unknown"}}
-      ]
+      "active_navigation_area": "",
+      "active_top_tab": "",
+      "focused_element": "",
+      "focus_state": "",
+      "selectable_elements": []
     }}
 
 evaluation:
