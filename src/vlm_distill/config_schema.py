@@ -58,7 +58,7 @@ class TrainingConfig:
     max_length: int = 512
     freeze_vision_tower: bool = True
     mask_prompt_labels: bool = True
-
+    quantization: str = "none"
 
 @dataclass
 class DistillationConfig:

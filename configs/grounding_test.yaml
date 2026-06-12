@@ -1,0 +1,70 @@
+seed: 42
+
+data:
+  manifest_path: data/grounding_test.jsonl
+  distill_path: outputs/grounding_teacher_labels.jsonl
+  eval_path: outputs/grounding_teacher_labels.jsonl
+
+  image_root: .
+  max_samples: 10
+
+teacher:
+  backend: hf
+
+  model_name: D:/Models/Qwen2.5-VL-7B-Instruct
+
+  device_map: auto
+
+  torch_dtype: float16
+
+  quantization: 4bit
+
+  temperature: 0.0
+
+  max_new_tokens: 256
+
+student:
+  model_name: mock-vlm-student
+
+  output_dir: outputs/grounding_student
+
+  adapter_dir: outputs/grounding_student/adapter
+
+  use_lora: true
+
+  quantization: none
+
+training:
+  epochs: 1
+
+  batch_size: 1
+
+  learning_rate: 0.0001
+
+  max_steps: 4
+
+distillation:
+  target_field: student_target
+
+  prompt_template: |
+    You are a visual grounding assistant.
+
+    Analyze this image.
+
+    Target object:
+    {target_label}
+
+    Return ONLY valid JSON:
+
+    {{
+      "label": "{target_label}",
+      "bbox": [x1, y1, x2, y2],
+      "confidence": 0.0
+    }}
+
+evaluation:
+  output_path: outputs/grounding_eval_report.json
+
+  metrics:
+    - valid_json_rate
+    - exact_match

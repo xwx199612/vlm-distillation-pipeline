@@ -61,15 +61,56 @@ class HuggingFaceTeacher:
     def __init__(self, config: PipelineConfig):
         self.config = config
         try:
-            from transformers import AutoModelForVision2Seq, AutoProcessor
+            import torch
+            from transformers import (
+                AutoModelForVision2Seq,
+                AutoProcessor,
+                BitsAndBytesConfig,
+            )
         except ImportError as exc:
-            raise RuntimeError("Install transformers to use the Hugging Face teacher backend.") from exc
+            raise RuntimeError(
+                "Install torch, transformers and bitsandbytes to use the Hugging Face teacher backend."
+            ) from exc
 
-        self.processor = AutoProcessor.from_pretrained(config.teacher.model_name, trust_remote_code=True)
+        self.processor = AutoProcessor.from_pretrained(
+            config.teacher.model_name,
+            trust_remote_code=True,
+        )
+        allowed_quantization = {"none", "4bit", "8bit"}
+
+        if config.teacher.quantization not in allowed_quantization:
+            raise ValueError(
+                f"Unsupported teacher quantization: "
+                f"{config.teacher.quantization}. "
+                f"Allowed values: {sorted(allowed_quantization)}"
+            )
+        model_kwargs = {
+            "device_map": config.teacher.device_map or "auto",
+            "trust_remote_code": True,
+        }
+
+        if config.teacher.quantization == "4bit":
+            model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_use_double_quant=True,
+            )
+        elif config.teacher.quantization == "8bit":
+            model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_8bit=True,
+            )
+        else:
+            if config.teacher.torch_dtype == "float16":
+                model_kwargs["torch_dtype"] = torch.float16
+            elif config.teacher.torch_dtype == "bfloat16":
+                model_kwargs["torch_dtype"] = torch.bfloat16
+            elif config.teacher.torch_dtype == "float32":
+                model_kwargs["torch_dtype"] = torch.float32
+
         self.model = AutoModelForVision2Seq.from_pretrained(
             config.teacher.model_name,
-            device_map=config.teacher.device_map or "auto",
-            trust_remote_code=True,
+            **model_kwargs,
         )
 
     def answer(self, sample: VlmSample) -> dict:

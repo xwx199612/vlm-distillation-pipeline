@@ -158,3 +158,66 @@ C:\Users\GT13-1365xt\miniconda3\envs\vl_distill\python.exe deploy\production\inf
 ## Notes
 
 這份專案骨架刻意不依賴既有資料夾。你只需要把資料放成 manifest JSONL，再把 config 中的路徑換成你的資料位置。
+
+Current Distillation Workflow
+Stage 1: Build Screen Parsing Dataset
+
+Generate a manifest from a folder of screenshots:
+
+vlm-distill create-manifest --task screen_parsing
+
+Output:
+
+data/screen_parsing_test.jsonl
+Stage 2: Generate Teacher Labels
+
+Run the teacher VLM to analyze screenshots and produce structured UI descriptions:
+
+vlm-distill label --config configs/screen_parsing_test.yaml
+
+Output:
+
+outputs/screen_parsing_teacher_labels.jsonl
+Stage 3: Build Grounding Dataset
+
+Automatically convert detected UI elements into grounding tasks:
+
+vlm-distill create-manifest --task grounding
+
+Output:
+
+data/grounding_test.jsonl
+Stage 4: Generate Grounding Labels
+
+Run the teacher VLM to predict object locations:
+
+vlm-distill label --config configs/grounding_test.yaml
+
+Output:
+
+outputs/grounding_teacher_labels.jsonl
+Stage 5: Train Student Model
+vlm-distill train --config configs/grounding_test.yaml
+Stage 6: Evaluate Student Model
+vlm-distill evaluate --config configs/grounding_test.yaml
+Quick Validation
+
+Validate a manifest before labeling:
+
+vlm-distill validate-data --config configs/screen_parsing_test.yaml
+
+or
+
+vlm-distill validate-data --config configs/grounding_test.yaml
+Teacher Configuration
+
+Example local Qwen2.5-VL-7B-Instruct teacher:
+
+teacher:
+  backend: hf
+  model_name: D:/Models/Qwen2.5-VL-7B-Instruct
+  device_map: auto
+  torch_dtype: float16
+  quantization: 4bit
+  temperature: 0.0
+  max_new_tokens: 256
