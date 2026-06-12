@@ -31,11 +31,8 @@ class MockTeacher:
         elif sample.task == "screen_parsing":
             teacher_answer = json.dumps(
                 {
-                    "screen_type": "unknown_gui_screen",
-                    "elements": [
-                        {"label": "mock icon", "type": "icon"},
-                        {"label": "mock settings", "type": "button"},
-                    ],
+                    "focused_element": "mock settings",
+                    "selectable_elements": ["mock icon", "mock settings"],
                 },
                 ensure_ascii=False,
             )
@@ -347,8 +344,8 @@ def _target_from_existing_annotation(sample: VlmSample) -> str | None:
     if sample.task == "screen_parsing" and sample.elements:
         return json.dumps(
             {
-                "screen_type": "unknown_gui_screen",
-                "elements": sample.elements,
+                "focused_element": "mock settings",
+                "selectable_elements": ["mock icon", "mock settings"],
             },
             ensure_ascii=False,
         )

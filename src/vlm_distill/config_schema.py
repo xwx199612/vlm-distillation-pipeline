@@ -67,7 +67,7 @@ class DistillationConfig:
     target_field: str = "student_target"
     confidence_weighting: bool = True
     min_teacher_confidence: float = 0.0
-    prompt_template: str = "Question: {question}\nAnswer:"
+    prompt_template: str = "Query: {query}\nAnswer:"
     method: str = "sft"
     lm_loss_weight: float = 1.0
     dbild_loss_weight: float = 0.5

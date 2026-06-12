@@ -71,8 +71,11 @@ class VisualSwitchDistiller:
 
         image_path = self.config.data.image_root / sample.image
         image = Image.open(image_path).convert("RGB")
-        prompt = self.config.distillation.prompt_template.format(question=sample.question)
-
+        prompt = self.config.distillation.prompt_template.format(
+            query=sample.query,
+            target_label=sample.target_label or "target object",
+            task=sample.task,
+        )
         with torch.no_grad():
             student_visual = self._student_visual_outputs(image)
             projected_visual = self._student_projector_outputs(student_visual)

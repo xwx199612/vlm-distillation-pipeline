@@ -39,7 +39,11 @@ class TeacherLogitsGenerator:
 
         image_path = self.config.data.image_root / sample.image
         image = Image.open(image_path).convert("RGB")
-        prompt = self.config.distillation.prompt_template.format(question=sample.question)
+        prompt = self.config.distillation.prompt_template.format(
+            query=sample.query,
+            target_label=sample.target_label or "target object",
+            task=sample.task,
+        )
         text = f"{prompt} {target_text}".strip()
 
         with torch.no_grad():
