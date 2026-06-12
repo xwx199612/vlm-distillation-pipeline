@@ -22,7 +22,7 @@ class TeacherBackend(Protocol):
 
 class MockTeacher:
     def answer(self, sample: VlmSample) -> dict:
-        seed = f"{sample.id}:{sample.instruction}:{sample.answer or ''}"
+        seed = f"{sample.id}:{sample.query}:{sample.answer or ''}"
         digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
         confidence = 0.55 + (int(digest[:4], 16) / 0xFFFF) * 0.4
 
@@ -337,8 +337,7 @@ def build_teacher(config: PipelineConfig) -> TeacherBackend:
 
 def _format_prompt(config: PipelineConfig, sample: VlmSample) -> str:
     return config.distillation.prompt_template.format(
-        question=sample.instruction,
-        instruction=sample.instruction,
+        query=sample.query,
         target_label=sample.target_label or "target object",
         task=sample.task,
     )

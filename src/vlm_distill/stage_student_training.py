@@ -87,10 +87,9 @@ def _train_hf_student(config: PipelineConfig, rows: list[dict]) -> Path:
 
     def tokenize(example: dict) -> dict:
         image = load_training_image(config.data.image_root, example["image"])
-        instruction = example.get("instruction") or example.get("question") or ""
+        query = example.get("query") or ""
         prompt = config.distillation.prompt_template.format(
-            question=instruction,
-            instruction=instruction,
+            query=query,
             target_label=example.get("target_label", "target object"),
             task=example.get("task", "vqa"),
         )

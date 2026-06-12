@@ -10,8 +10,7 @@ from typing import Iterable, Any
 class VlmSample:
     id: str
     image: str
-    instruction: str
-    question: str | None = None
+    query: str | None = None
     answer: str | None = None
     task: str = "vqa"
     target_label: str | None = None
@@ -56,17 +55,16 @@ def validate_manifest(path: Path, image_root: Path = Path("."), max_samples: int
             raise FileNotFoundError(f"{path}:{index} image not found: {image_path}")
 
         task = str(row.get("task", "vqa"))
-        question = row.get("question")
-        instruction = row.get("instruction") or question
+        query = row.get("query")
 
-        if not instruction:
+        if not query:
             if task == "screen_parsing":
-                instruction = "List all visible UI icons, buttons, menu items, and actionable elements."
+                query = "List all visible UI icons, buttons, menu items, and actionable elements."
             elif task == "grounding" and row.get("target_label"):
-                instruction = f"Locate the {row['target_label']} in the image."
+                query = f"Locate the {row['target_label']} in the image."
             else:
                 raise ValueError(
-                    f"{path}:{index} requires instruction/question, "
+                    f"{path}:{index} requires query, "
                     "or target_label for grounding."
                 )
 
@@ -77,8 +75,7 @@ def validate_manifest(path: Path, image_root: Path = Path("."), max_samples: int
             VlmSample(
                 id=str(row["id"]),
                 image=str(row["image"]),
-                instruction=str(instruction),
-                question=str(question) if question is not None else None,
+                query=str(query) if query is not None else None,
                 answer=row.get("answer"),
                 task=task,
                 target_label=row.get("target_label"),
