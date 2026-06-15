@@ -7,7 +7,7 @@ data:
   distill_path: D:/TV_data/teacher_parsing/screen_parsing_teacher_labels.jsonl
   eval_path: D:/TV_data/teacher_parsing/screen_parsing_teacher_labels.jsonl
   image_root: .
-  max_samples: 3
+  max_samples: null
 
 teacher:
   backend: hf
@@ -39,6 +39,9 @@ distillation:
   target_field: student_target
   prompt_template: |
     You are an Android TV GUI automation assistant.
+
+    Task:
+    {query}
 
     Analyze this screenshot for remote-control navigation.
 

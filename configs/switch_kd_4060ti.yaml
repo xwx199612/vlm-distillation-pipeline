@@ -12,11 +12,11 @@ teacher:
   model_name: Qwen/Qwen2.5-VL-7B-Instruct
   device_map: auto
   torch_dtype: float16
-  temperature: 0.2
-  max_new_tokens: 128
+  temperature: 0.0
+  max_new_tokens: 256
 
 student:
-  # 4060 Ti 建議先用 0.5B-2B 級別 student；3B 以上要 16GB 版本才比較舒服。
+  # 4060 Ti 16GB 可直接嘗試 2B-3B 級別 student；若想更穩定再往下調。
   model_name: HuggingFaceTB/SmolVLM2-2.2B-Instruct
   output_dir: outputs/student_switch_kd
   adapter_dir: outputs/student_switch_kd/adapter
@@ -34,7 +34,7 @@ student:
 training:
   epochs: 1
   batch_size: 1
-  gradient_accumulation_steps: 16
+  gradient_accumulation_steps: 8
   learning_rate: 0.0001
   warmup_ratio: 0.03
   max_steps:
@@ -56,7 +56,7 @@ distillation:
   dbild_loss_weight: 0.5
   vsd_loss_weight: 0.5
   kd_temperature: 2.0
-  dbild_top_k: 32
+  dbild_top_k: 64
   dbild_min_prob: 0.0
   teacher_logits_field: teacher_logits
   switch_logits_field: switch_logits
@@ -70,8 +70,8 @@ distillation:
   teacher_lm_head_path: lm_head
   # Qwen2.5-VL processor 常用影像 placeholder；SmolVLM 會 fallback 到前置拼接。
   visual_token_placeholder: "<|image_pad|>"
-  # 4060 Ti 建議先快取 top-k logits，避免 JSONL 變得過大。
-  max_cached_logits_vocab: 4096
+  # 4060 Ti 16GB 可用更大的 top-k cache；8k 是較平衡的預設。
+  max_cached_logits_vocab: 8192
   align_kd_logits_to_answer: true
   # Qwen teacher 與 SmolVLM student 詞表不同時，DBiLD/VSD 會自動跳過，只保留 LM loss。
   skip_kd_on_vocab_mismatch: true

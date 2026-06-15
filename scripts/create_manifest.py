@@ -7,7 +7,7 @@ def build_manifest(
     image_dir: Path,
     output_path: Path,
     task: str,
-    instruction: str,
+    query: str,
 ):
     image_exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
@@ -24,7 +24,7 @@ def build_manifest(
                 "id": f"{task}-{idx:06d}",
                 "image": str(image_path).replace("\\", "/"),
                 "task": task,
-                "instruction": instruction,
+                "query": query,
             }
 
             f.write(
@@ -59,7 +59,7 @@ def main():
     )
 
     parser.add_argument(
-        "--instruction",
+        "--query",
         required=True,
     )
 
@@ -69,7 +69,7 @@ def main():
         image_dir=Path(args.image_dir),
         output_path=Path(args.output),
         task=args.task,
-        instruction=args.instruction,
+        query=args.query,
     )
 
 
