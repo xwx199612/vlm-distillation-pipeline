@@ -16,7 +16,7 @@ from urllib.parse import urljoin
 
 from .config_schema import PipelineConfig, format_prompt, resolve_label_path
 from .data_manifest import VlmSample, read_jsonl
-from .model_loading import apply_attn_implementation
+from .model_loading import apply_attn_implementation, resolve_model_path
 
 
 class TeacherBackend(Protocol):
@@ -75,8 +75,9 @@ class HuggingFaceTeacher:
                 "Install torch, transformers and bitsandbytes to use the Hugging Face teacher backend."
             ) from exc
 
+        model_path = resolve_model_path(config.teacher.model_name)
         self.processor = AutoProcessor.from_pretrained(
-            config.teacher.model_name,
+            model_path,
             trust_remote_code=True,
             use_fast=False,
             local_files_only=True,
@@ -115,7 +116,7 @@ class HuggingFaceTeacher:
                 model_kwargs["torch_dtype"] = torch.float32
 
         self.model = AutoModelForVLM.from_pretrained(
-            config.teacher.model_name,
+            model_path,
             **model_kwargs,
             local_files_only=True,
         )
@@ -939,4 +940,3 @@ def _build_parsing_retry_prompt(sample: VlmSample) -> str:
         "- do not copy instruction words, schema keys, booleans, or placeholder text into elements\n"
         "- each element must be a visible interactive label from the screenshot"
     )
-

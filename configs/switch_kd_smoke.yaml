@@ -1,0 +1,67 @@
+seed: 42
+
+data:
+  manifest_path: examples/parsing_manifest.jsonl
+  distill_path: outputs/smoke/switch_kd_dataset.jsonl
+  label_path: outputs/smoke/teacher_labels.jsonl
+  teacher_logits_path: outputs/smoke/teacher_logits.jsonl
+  switch_logits_path: outputs/smoke/switch_logits.jsonl
+  eval_path: outputs/smoke/switch_kd_dataset.jsonl
+  image_root: .
+  max_samples: 1
+
+teacher:
+  backend: mock
+  model_name: Qwen/Qwen2.5-VL-7B-Instruct
+  temperature: 0.0
+  max_new_tokens: 8
+  image_resize: 480p
+
+student:
+  model_name: mock-student
+  output_dir: outputs/smoke/student_switch_kd
+  adapter_dir: outputs/smoke/student_switch_kd/adapter
+  use_lora: true
+  lora_rank: 2
+  lora_alpha: 4
+  lora_dropout: 0.0
+  quantization: none
+
+training:
+  epochs: 1
+  batch_size: 1
+  gradient_accumulation_steps: 1
+  learning_rate: 0.0001
+  max_steps: 1
+  log_every: 1
+  save_every: 1
+  mixed_precision: "no"
+  gradient_checkpointing: false
+  image_resize: 480p
+  max_length: 128
+  freeze_vision_tower: true
+  mask_prompt_labels: true
+
+distillation:
+  method: switch_kd
+  confidence_weighting: true
+  min_teacher_confidence: 0.0
+  prompt_template: "query: {query}\nAnswer:"
+  lm_loss_weight: 1.0
+  dbild_loss_weight: 0.5
+  vsd_loss_weight: 0.5
+  kd_temperature: 2.0
+  dbild_top_k: 4
+  dbild_min_prob: 0.0
+  teacher_logits_field: teacher_logits
+  switch_logits_field: switch_logits
+  use_cached_logits: true
+  max_cached_logits_vocab: 16
+  align_kd_logits_to_answer: true
+  skip_kd_on_vocab_mismatch: true
+
+evaluation:
+  output_path: outputs/smoke/eval_report.json
+  metrics:
+    - exact_match
+    - token_f1

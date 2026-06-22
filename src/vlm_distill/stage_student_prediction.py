@@ -9,7 +9,7 @@ from typing import Protocol
 
 from .config_schema import PipelineConfig, format_prompt, resolve_prediction_path
 from .data_manifest import VlmSample, read_jsonl
-from .model_loading import apply_attn_implementation
+from .model_loading import apply_attn_implementation, resolve_model_path
 from .stage_answer_labeling import _load_teacher_image, _normalize_teacher_answer
 
 
@@ -68,7 +68,9 @@ class HuggingFaceStudent:
                 "Install torch, transformers and bitsandbytes to use the Hugging Face student backend."
             ) from exc
 
-        model_path = config.student.inference_model_path or config.student.model_name
+        model_path = resolve_model_path(
+            config.student.inference_model_path or config.student.model_name
+        )
         self.processor = AutoProcessor.from_pretrained(
             model_path,
             trust_remote_code=True,

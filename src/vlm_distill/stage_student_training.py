@@ -20,13 +20,7 @@ from .logits_cache_utils import (
     materialize_cached_logits,
     vocab_sizes_compatible,
 )
-from .vlm_batching import (
-    build_supervision_mask,
-    build_vlm_data_collator,
-    encode_vlm_training_sample,
-    load_training_image,
-)
-from .model_loading import apply_attn_implementation
+from .model_loading import apply_attn_implementation, resolve_model_path
 
 
 class VlmTrainingDataset:
@@ -41,6 +35,8 @@ class VlmTrainingDataset:
         return len(self.rows)
 
     def __getitem__(self, index: int) -> dict[str, Any]:
+        from .vlm_batching import encode_vlm_training_sample, load_training_image
+
         example = self.rows[index]
         image = load_training_image(
             self.config.data.image_root,
@@ -119,12 +115,15 @@ def _train_hf_student(config: PipelineConfig, rows: list[dict]) -> Path:
     except ImportError as exc:
         raise RuntimeError("Install transformers, datasets and peft to run real training.") from exc
 
+    from .vlm_batching import build_vlm_data_collator
+
+    student_model_path = resolve_model_path(config.student.model_name)
     processor = AutoProcessor.from_pretrained(
-        config.student.model_name,
+        student_model_path,
         trust_remote_code=True,
         local_files_only=True,
     )
-    model = _load_student_model(config)
+    model = _load_student_model(config, student_model_path)
 
     if config.student.quantization in {"4bit", "8bit"}:
         model = prepare_model_for_kbit_training(model)
@@ -181,7 +180,7 @@ def _train_hf_student(config: PipelineConfig, rows: list[dict]) -> Path:
     return config.student.adapter_dir
 
 
-def _load_student_model(config: PipelineConfig):
+def _load_student_model(config: PipelineConfig, model_path: str | None = None):
     try:
         from transformers import AutoModelForImageTextToText as AutoModelForVLM
     except ImportError:  # pragma: no cover - fallback for older transformers
@@ -207,13 +206,15 @@ def _load_student_model(config: PipelineConfig):
         model_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
 
     model_kwargs["local_files_only"] = True
-    return AutoModelForVLM.from_pretrained(config.student.model_name, **model_kwargs)
+    model_name_or_path = model_path or resolve_model_path(config.student.model_name)
+    return AutoModelForVLM.from_pretrained(model_name_or_path, **model_kwargs)
 
 
 def _build_switch_kd_trainer():
     from transformers import Trainer
 
     from .loss_switch_kd import SwitchKDLoss
+    from .vlm_batching import build_supervision_mask
 
     class SwitchKDTrainer(Trainer):
         _vocab_warning_emitted: set[str] = set()
@@ -459,12 +460,12 @@ def _build_vocab_alignment(config: PipelineConfig) -> VocabAlignment | None:
 
     try:
         student_processor = AutoProcessor.from_pretrained(
-            config.student.model_name,
+            resolve_model_path(config.student.model_name),
             trust_remote_code=True,
             local_files_only=True,
         )
         teacher_processor = AutoProcessor.from_pretrained(
-            config.teacher.model_name,
+            resolve_model_path(config.teacher.model_name),
             trust_remote_code=True,
             local_files_only=True,
         )

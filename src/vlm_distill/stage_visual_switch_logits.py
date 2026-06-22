@@ -13,8 +13,7 @@ from .config_schema import (
     resolve_teacher_logits_path,
 )
 from .data_manifest import VlmSample, read_jsonl, validate_manifest, write_jsonl
-from .model_loading import resolve_attn_implementation
-from .vlm_batching import load_training_image
+from .model_loading import resolve_attn_implementation, resolve_model_path
 
 
 INACTIVE_LOGIT = -1.0e4
@@ -61,21 +60,22 @@ class VisualSwitchDistiller:
         except ImportError:  # pragma: no cover - fallback for older transformers
             from transformers import AutoModelForVision2Seq as AutoModelForVLM
 
+        student_model_path = resolve_model_path(self.config.student.model_name)
+        teacher_model_path = resolve_model_path(self.config.teacher.model_name)
         self._torch = torch
         self._student_processor = AutoProcessor.from_pretrained(
-            self.config.student.model_name,
+            student_model_path,
             trust_remote_code=True,
             local_files_only=True,
         )
         self._teacher_processor = AutoProcessor.from_pretrained(
-            self.config.teacher.model_name,
+            teacher_model_path,
             trust_remote_code=True,
             local_files_only=True,
         )
         self._student_model = AutoModelForVLM.from_pretrained(
-            self.config.student.model_name,
+            student_model_path,
             **_build_vlm_load_kwargs(
-                model_name=self.config.student.model_name,
                 quantization=getattr(self.config.student, "quantization", "none"),
                 torch_dtype=None,
                 attn_implementation=self.config.student.attn_implementation,
@@ -83,9 +83,8 @@ class VisualSwitchDistiller:
             ),
         ).eval()
         self._teacher_model = AutoModelForVLM.from_pretrained(
-            self.config.teacher.model_name,
+            teacher_model_path,
             **_build_vlm_load_kwargs(
-                model_name=self.config.teacher.model_name,
                 quantization=getattr(self.config.teacher, "quantization", "none"),
                 torch_dtype=getattr(self.config.teacher, "torch_dtype", None),
                 attn_implementation=self.config.teacher.attn_implementation,
@@ -100,6 +99,8 @@ class VisualSwitchDistiller:
             self.load()
 
         import torch
+        from .vlm_batching import load_training_image
+
         image = load_training_image(
             self.config.data.image_root,
             sample.image,
@@ -147,8 +148,6 @@ class VisualSwitchDistiller:
         return teacher_backend == "mock" or student_name.startswith("mock-")
 
     def _mock_generate_for_sample(self, sample: VlmSample) -> dict[str, Any]:
-        import torch
-
         field = self.config.distillation.switch_logits_field
         prompt = format_prompt(
             self.config.distillation.prompt_template,
@@ -160,19 +159,36 @@ class VisualSwitchDistiller:
         prompt_len = max(1, len(prompt.split()))
         seq_len = max(2, min(6, prompt_len // 2))
         vocab_size = 32
-        logits = torch.full((1, seq_len, vocab_size), -6.0, dtype=torch.float32)
+        base_k = int(self.config.distillation.dbild_top_k)
+        max_k = min(vocab_size, max(2, min(base_k, 8)))
+
+        indices = []
+        values = []
+        token_k = []
+        entropy = []
+        entropy_weight = []
         for step_index in range(seq_len):
             peak_index = (step_index * 3) % vocab_size
-            logits[0, step_index, peak_index] = 5.0
-            logits[0, step_index, (peak_index + 1) % vocab_size] = 3.5
-            logits[0, step_index, (peak_index + 2) % vocab_size] = 2.0
+            step_indices = [(peak_index + offset) % vocab_size for offset in range(max_k)]
+            step_values = [5.0 - rank for rank in range(max_k)]
+            step_entropy = 1.0
+            indices.append(step_indices)
+            values.append(step_values)
+            token_k.append(min(max_k, max(2, base_k)))
+            entropy.append(step_entropy)
+            entropy_weight.append(_entropy_to_weight(step_entropy))
 
-        cached_logits = _compact_adaptive_sequence_logits(
-            logits,
-            base_k=int(self.config.distillation.dbild_top_k),
-            max_cached_logits_vocab=self.config.distillation.max_cached_logits_vocab,
-            temperature=float(self.config.distillation.kd_temperature),
-        )
+        cached_logits = {
+            "indices": [indices],
+            "values": [values],
+            "shape": [1, seq_len, vocab_size],
+            "vocab_size": vocab_size,
+            "adaptive": True,
+            "token_k": [token_k],
+            "entropy": [entropy],
+            "entropy_weight": [entropy_weight],
+            "switch_kd": True,
+        }
         return {
             field: cached_logits,
             f"{field}_format": "switch_kd",
@@ -451,7 +467,6 @@ def _processor_image_inputs(processor, image):
 
 def _build_vlm_load_kwargs(
     *,
-    model_name: str,
     quantization: str | None,
     torch_dtype: str | None,
     attn_implementation: str,

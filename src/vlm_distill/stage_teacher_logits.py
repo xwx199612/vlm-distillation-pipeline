@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from .config_schema import PipelineConfig, resolve_teacher_logits_path
 from .data_manifest import VlmSample, validate_manifest, write_jsonl
-from .model_loading import apply_attn_implementation
+from .model_loading import apply_attn_implementation, resolve_model_path
 from .stage_answer_labeling import _load_teacher_image
 
 
@@ -61,8 +61,9 @@ class TeacherLogitsGenerator:
         except ImportError:  # pragma: no cover - fallback for older transformers
             from transformers import AutoModelForVision2Seq as AutoModelForVLM
 
+        model_path = resolve_model_path(self.config.teacher.model_name)
         self._processor = AutoProcessor.from_pretrained(
-            self.config.teacher.model_name,
+            model_path,
             trust_remote_code=True,
             local_files_only=True,
         )
@@ -93,7 +94,7 @@ class TeacherLogitsGenerator:
                 model_kwargs["torch_dtype"] = torch.float32
 
         self._model = AutoModelForVLM.from_pretrained(
-            self.config.teacher.model_name,
+            model_path,
             **model_kwargs,
             local_files_only=True,
         ).eval()
@@ -666,4 +667,3 @@ def _model_device(model):
         return next(model.parameters()).device
     except StopIteration as exc:
         raise RuntimeError("Could not determine model device.") from exc
-

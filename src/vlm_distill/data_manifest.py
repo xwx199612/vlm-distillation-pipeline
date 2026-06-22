@@ -20,7 +20,7 @@ class VlmSample:
 
 def read_jsonl(path: Path, max_samples: int | None = None) -> list[dict]:
     rows: list[dict] = []
-    with path.open("r", encoding="utf-8") as handle:
+    with path.open("r", encoding="utf-8-sig") as handle:
         for line_number, line in enumerate(handle, start=1):
             if not line.strip():
                 continue
