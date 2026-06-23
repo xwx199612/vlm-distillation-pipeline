@@ -20,10 +20,13 @@ from .device_utils import (
     select_model_input_device,
 )
 from .logits_cache_utils import (
+    align_compact_reference_to_suffix,
     align_reference_logits,
     align_reference_logits_to_suffix,
     cached_vocab_size,
+    compact_logits_to_tensors,
     materialize_cached_logits,
+    remap_compact_reference_to_student_vocab,
     vocab_sizes_compatible,
 )
 from .model_loading import apply_attn_implementation, resolve_model_path
@@ -373,6 +376,58 @@ def _prepare_reference_logits(
         reference_vocab = int(reference_vocab_size_meta)
     else:
         reference_vocab = cached_vocab_size(cached)
+
+    compact = compact_logits_to_tensors(cached, device=device, dtype=dtype)
+    if compact is not None:
+        effective_reference_prompt_len = _normalize_reference_prompt_len(reference_prompt_len, compact["indices"].shape[1])
+        if not vocab_sizes_compatible(reference_vocab, student_vocab_size):
+            remapped = remap_compact_reference_to_student_vocab(
+                compact,
+                reference_vocab=reference_vocab,
+                student_vocab_size=student_vocab_size,
+                shared_token_vocab_size=(
+                    vocab_alignment.shared_token_vocab_size if vocab_alignment is not None else None
+                ),
+            )
+            if remapped is None:
+                if distill.skip_kd_on_vocab_mismatch:
+                    key = f"{label}:{reference_vocab}->{student_vocab_size}"
+                    if key not in warning_bucket:
+                        print(
+                            f"Warning: Skipping {label} KD because cached vocab_size={reference_vocab} "
+                            f"does not match student vocab_size={student_vocab_size}."
+                        )
+                        warning_bucket.add(key)
+                    return None
+            else:
+                key = f"{label}:{reference_vocab}->{student_vocab_size}:remapped"
+                if key not in warning_bucket:
+                    print(
+                        f"Info: Remapped {label} KD logits from vocab_size={reference_vocab} "
+                        f"to student vocab_size={student_vocab_size} using shared_token_vocab_size="
+                        f"{vocab_alignment.shared_token_vocab_size if vocab_alignment else 'unknown'}."
+                    )
+                    warning_bucket.add(key)
+                compact = remapped
+        elif compact["vocab_size"] != student_vocab_size:
+            compact["shape"] = (*compact["shape"][:-1], student_vocab_size)
+            compact["vocab_size"] = int(student_vocab_size)
+
+        if distill.align_kd_logits_to_answer:
+            return align_compact_reference_to_suffix(
+                compact,
+                target_shape=target_shape,
+                reference_prompt_len=effective_reference_prompt_len,
+                student_prompt_len=student_prompt_len,
+                dtype=dtype,
+            )
+        return align_compact_reference_to_suffix(
+            compact,
+            target_shape=target_shape,
+            reference_prompt_len=None,
+            student_prompt_len=None,
+            dtype=dtype,
+        )
 
     tensor = materialize_cached_logits(
         cached,
