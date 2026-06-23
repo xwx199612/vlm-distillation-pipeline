@@ -57,7 +57,7 @@ training:
   mixed_precision: fp16
   gradient_checkpointing: true
   image_resize: "{quality}"
-  max_length: 512
+  max_length: 4096
   freeze_vision_tower: true
   mask_prompt_labels: true
 
