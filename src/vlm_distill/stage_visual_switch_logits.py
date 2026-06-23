@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import gc
 import inspect
 import json
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from .config_schema import (
     PipelineConfig,
@@ -18,6 +20,7 @@ from .data_manifest import VlmSample, read_jsonl, validate_manifest
 from .device_utils import (
     batch_to_device,
     ensure_stage_uses_cuda,
+    get_module_by_path,
     module_device,
     print_stage_model_debug,
     resolve_requested_device_map,
@@ -61,6 +64,10 @@ class VisualSwitchDistiller:
         self._teacher_text_device = None
 
     def load(self) -> None:
+        self.load_student_only()
+        self.load_teacher_only()
+
+    def load_student_only(self) -> None:
         if self._is_mock_mode():
             return
 
@@ -73,23 +80,15 @@ class VisualSwitchDistiller:
             from transformers import AutoModelForVision2Seq as AutoModelForVLM
 
         student_model_path = resolve_model_path(self.config.student.model_name)
-        teacher_model_path = resolve_model_path(self.config.teacher.model_name)
-        teacher_requested_device_map = resolve_requested_device_map(
-            self.config.teacher.device_map,
-            quantization=getattr(self.config.teacher, "quantization", "none"),
-            role="teacher",
-        )
         self._torch = torch
-        self._student_processor = AutoProcessor.from_pretrained(
-            student_model_path,
-            trust_remote_code=True,
-            local_files_only=True,
-        )
-        self._teacher_processor = AutoProcessor.from_pretrained(
-            teacher_model_path,
-            trust_remote_code=True,
-            local_files_only=True,
-        )
+        if self._student_processor is None:
+            self._student_processor = AutoProcessor.from_pretrained(
+                student_model_path,
+                trust_remote_code=True,
+                local_files_only=True,
+            )
+        if self._student_model is not None:
+            return
         self._student_model = AutoModelForVLM.from_pretrained(
             student_model_path,
             **_build_vlm_load_kwargs(
@@ -100,26 +99,16 @@ class VisualSwitchDistiller:
                 BitsAndBytesConfig=BitsAndBytesConfig,
             ),
         ).eval()
-        self._teacher_model = AutoModelForVLM.from_pretrained(
-            teacher_model_path,
-            **_build_vlm_load_kwargs(
-                requested_device_map=teacher_requested_device_map,
-                quantization=getattr(self.config.teacher, "quantization", "none"),
-                torch_dtype=getattr(self.config.teacher, "torch_dtype", None),
-                attn_implementation=self.config.teacher.attn_implementation,
-                BitsAndBytesConfig=BitsAndBytesConfig,
-            ),
-        ).eval()
-        components = self._components()
         self._student_input_device = select_model_input_device(
             self._student_model,
-            preferred_modules=(components.student_vision, getattr(self._student_model, "visual", None)),
+            preferred_modules=(
+                get_module_by_path(self._student_model, "model.visual"),
+                get_module_by_path(self._student_model, "visual"),
+                get_module_by_path(self._student_model, "vision_tower"),
+                get_module_by_path(self._student_model, "model.vision_tower"),
+                get_module_by_path(self._student_model, "model.language_model.embed_tokens"),
+            ),
             label="Switch logits student",
-        )
-        self._teacher_text_device = select_model_input_device(
-            self._teacher_model,
-            preferred_modules=(components.teacher_token_embedding, components.teacher_lm),
-            label="Switch logits teacher",
         )
         print_stage_model_debug(
             stage_label="Switch logits student",
@@ -134,6 +123,61 @@ class VisualSwitchDistiller:
             requested_device_map="auto",
             model=self._student_model,
             selected_input_device=self._student_input_device,
+        )
+
+    def unload_student(self) -> None:
+        self._student_model = None
+        self._student_input_device = None
+        self._aligner = None
+        gc.collect()
+        if self._torch is not None and self._torch.cuda.is_available():
+            self._torch.cuda.empty_cache()
+
+    def load_teacher_only(self) -> None:
+        if self._is_mock_mode():
+            return
+
+        import torch
+        from transformers import AutoProcessor, BitsAndBytesConfig
+
+        try:
+            from transformers import AutoModelForImageTextToText as AutoModelForVLM
+        except ImportError:  # pragma: no cover - fallback for older transformers
+            from transformers import AutoModelForVision2Seq as AutoModelForVLM
+
+        teacher_model_path = resolve_model_path(self.config.teacher.model_name)
+        teacher_requested_device_map = resolve_requested_device_map(
+            self.config.teacher.device_map,
+            quantization=getattr(self.config.teacher, "quantization", "none"),
+            role="teacher",
+        )
+        self._torch = torch
+        if self._teacher_processor is None:
+            self._teacher_processor = AutoProcessor.from_pretrained(
+                teacher_model_path,
+                trust_remote_code=True,
+                local_files_only=True,
+            )
+        if self._teacher_model is not None:
+            return
+        self._teacher_model = AutoModelForVLM.from_pretrained(
+            teacher_model_path,
+            **_build_vlm_load_kwargs(
+                requested_device_map=teacher_requested_device_map,
+                quantization=getattr(self.config.teacher, "quantization", "none"),
+                torch_dtype=getattr(self.config.teacher, "torch_dtype", None),
+                attn_implementation=self.config.teacher.attn_implementation,
+                BitsAndBytesConfig=BitsAndBytesConfig,
+            ),
+        ).eval()
+        self._teacher_text_device = select_model_input_device(
+            self._teacher_model,
+            preferred_modules=(
+                get_module_by_path(self._teacher_model, "model.language_model.embed_tokens"),
+                get_module_by_path(self._teacher_model, "model.language_model"),
+                get_module_by_path(self._teacher_model, "language_model"),
+            ),
+            label="Switch logits teacher",
         )
         print_stage_model_debug(
             stage_label="Switch logits teacher",
@@ -175,30 +219,65 @@ class VisualSwitchDistiller:
             student_inputs = self._student_image_inputs(image)
             student_visual = self._student_visual_outputs(student_inputs)
             projected_visual = self._student_projector_outputs(student_visual, student_inputs)
-            teacher_inputs = self._teacher_text_inputs(prompt)
-            switched_embeds, attention_mask = self._splice_visual_embeds(
-                teacher_inputs=teacher_inputs,
+            return self._generate_for_sample_from_projected_visual(
+                sample=sample,
+                prompt=prompt,
                 projected_visual=projected_visual,
             )
-            switch_logits = self._teacher_lm_forward(
-                inputs_embeds=switched_embeds,
-                attention_mask=attention_mask,
-            )
-            cached_logits = _compact_adaptive_sequence_logits(
-                switch_logits,
-                base_k=int(self.config.distillation.dbild_top_k),
-                max_cached_logits_vocab=self.config.distillation.max_cached_logits_vocab,
-                temperature=float(self.config.distillation.kd_temperature),
-            )
 
-        field = self.config.distillation.switch_logits_field
-        return {
-            field: cached_logits,
-            f"{field}_format": "switch_kd",
-            f"{field}_prompt_len": int(teacher_inputs["input_ids"].shape[1]),
-            f"{field}_vocab_size": int(switch_logits.shape[-1]),
-            f"{field}_temperature": float(self.config.distillation.kd_temperature),
-        }
+    def generate_student_visual_cache_for_sample(self, sample: VlmSample, cache_path: Path) -> None:
+        if self._is_mock_mode():
+            raise RuntimeError("Student visual cache generation is not supported in mock mode.")
+        if self._student_model is None:
+            self.load_student_only()
+
+        from .vlm_batching import load_training_image
+
+        image = load_training_image(
+            self.config.data.image_root,
+            sample.image,
+            resize_mode=self.config.training.image_resize,
+        )
+        with self._torch.no_grad():
+            student_inputs = self._student_image_inputs(image)
+            student_visual = self._student_visual_outputs(student_inputs)
+            projected_visual = self._student_projector_outputs(student_visual, student_inputs)
+            projected_visual = projected_visual.detach()
+            if self.config.distillation.keep_student_visual_cache_on_cpu:
+                projected_visual = projected_visual.cpu()
+
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        self._torch.save(
+            {
+                "id": str(sample.id),
+                "projected_visual": projected_visual,
+                "shape": list(projected_visual.shape),
+                "dtype": str(projected_visual.dtype),
+            },
+            cache_path,
+        )
+
+    def generate_for_sample_from_visual_cache(self, sample: VlmSample, cache_path: Path) -> dict[str, Any]:
+        if self._is_mock_mode():
+            return self._mock_generate_for_sample(sample)
+        if self._teacher_model is None:
+            self.load_teacher_only()
+
+        cached = self._torch.load(cache_path, map_location="cpu")
+        projected_visual = cached["projected_visual"]
+        prompt = format_prompt(
+            self.config.distillation.prompt_template,
+            query=sample.query,
+            target_label=sample.target_label,
+            target_type=sample.target_type,
+            task=sample.task,
+        )
+        with self._torch.no_grad():
+            return self._generate_for_sample_from_projected_visual(
+                sample=sample,
+                prompt=prompt,
+                projected_visual=projected_visual,
+            )
 
     def _is_mock_mode(self) -> bool:
         teacher_backend = (self.config.teacher.backend or "").lower()
@@ -257,32 +336,27 @@ class VisualSwitchDistiller:
 
     def _components(self) -> VSDComponents:
         distill = self.config.distillation
-        student_vision = _resolve_component(
-            self._student_model,
+        student_vision = self._student_component(
             distill.student_vision_path,
             _STUDENT_VISION_CANDIDATES,
             "student vision encoder",
         )
-        student_projector = _resolve_component(
-            self._student_model,
+        student_projector = self._student_component(
             distill.student_projector_path,
             _STUDENT_PROJECTOR_CANDIDATES,
             "student projector",
         )
-        teacher_lm = _resolve_component(
-            self._teacher_model,
+        teacher_lm = self._teacher_component(
             distill.teacher_lm_path,
             _TEACHER_LM_CANDIDATES,
             "teacher LLM",
         )
-        teacher_token_embedding = _resolve_component(
-            self._teacher_model,
+        teacher_token_embedding = self._teacher_component(
             distill.teacher_token_embedding_path,
             _TEACHER_EMBEDDING_CANDIDATES,
             "teacher token embedding",
         )
-        teacher_lm_head = _resolve_optional_component(
-            self._teacher_model,
+        teacher_lm_head = self._teacher_optional_component(
             distill.teacher_lm_head_path,
             _TEACHER_LM_HEAD_CANDIDATES,
         )
@@ -294,26 +368,49 @@ class VisualSwitchDistiller:
             teacher_lm_head=teacher_lm_head,
         )
 
+    def _student_component(self, configured_path: str | None, candidates: tuple[str, ...], label: str):
+        if self._student_model is None:
+            raise RuntimeError(f"Student model is not loaded while resolving {label}.")
+        return _resolve_component(self._student_model, configured_path, candidates, label)
+
+    def _teacher_component(self, configured_path: str | None, candidates: tuple[str, ...], label: str):
+        if self._teacher_model is None:
+            raise RuntimeError(f"Teacher model is not loaded while resolving {label}.")
+        return _resolve_component(self._teacher_model, configured_path, candidates, label)
+
+    def _teacher_optional_component(self, configured_path: str | None, candidates: tuple[str, ...]):
+        if self._teacher_model is None:
+            return None
+        return _resolve_optional_component(self._teacher_model, configured_path, candidates)
+
     def _student_image_inputs(self, image):
         student_inputs = _processor_image_inputs(self._student_processor, image)
         return batch_to_device(student_inputs, self._student_input_device)
 
     def _student_visual_outputs(self, student_inputs):
-        components = self._components()
-        device = module_device(components.student_vision)
+        student_vision = self._student_component(
+            self.config.distillation.student_vision_path,
+            _STUDENT_VISION_CANDIDATES,
+            "student vision encoder",
+        )
+        device = module_device(student_vision)
         vision_inputs = batch_to_device(student_inputs, device)
-        vision_kwargs = _build_vision_forward_kwargs(components.student_vision, vision_inputs)
-        outputs = components.student_vision(**vision_kwargs)
+        vision_kwargs = _build_vision_forward_kwargs(student_vision, vision_inputs)
+        outputs = student_vision(**vision_kwargs)
         return _first_tensor(outputs)
 
     def _student_projector_outputs(self, visual_outputs, student_inputs):
-        components = self._components()
+        student_projector = self._student_component(
+            self.config.distillation.student_projector_path,
+            _STUDENT_PROJECTOR_CANDIDATES,
+            "student projector",
+        )
         projector_kwargs = _build_projector_forward_kwargs(
-            components.student_projector,
+            student_projector,
             visual_outputs,
             student_inputs,
         )
-        projected = components.student_projector(**projector_kwargs)
+        projected = student_projector(**projector_kwargs)
         return _first_tensor(projected)
 
     def _teacher_text_inputs(self, prompt: str):
@@ -323,9 +420,13 @@ class VisualSwitchDistiller:
     def _splice_visual_embeds(self, teacher_inputs, projected_visual):
         import torch
 
-        components = self._components()
+        teacher_token_embedding = self._teacher_component(
+            self.config.distillation.teacher_token_embedding_path,
+            _TEACHER_EMBEDDING_CANDIDATES,
+            "teacher token embedding",
+        )
         input_ids = teacher_inputs["input_ids"]
-        text_embeds = components.teacher_token_embedding(input_ids)
+        text_embeds = teacher_token_embedding(input_ids)
         projected_visual = projected_visual.to(text_embeds.device, dtype=text_embeds.dtype)
         projected_visual = _ensure_batch_sequence(projected_visual)
         projected_visual = self._align_visual_dim(projected_visual, text_embeds.shape[-1])
@@ -354,17 +455,25 @@ class VisualSwitchDistiller:
         return switched_embeds, switched_mask
 
     def _teacher_lm_forward(self, inputs_embeds, attention_mask):
-        components = self._components()
-        lm_device = module_device(components.teacher_lm) or self._teacher_text_device
+        teacher_lm = self._teacher_component(
+            self.config.distillation.teacher_lm_path,
+            _TEACHER_LM_CANDIDATES,
+            "teacher LLM",
+        )
+        teacher_lm_head = self._teacher_optional_component(
+            self.config.distillation.teacher_lm_head_path,
+            _TEACHER_LM_HEAD_CANDIDATES,
+        )
+        lm_device = module_device(teacher_lm) or self._teacher_text_device
         inputs_embeds = inputs_embeds.to(lm_device)
         attention_mask = attention_mask.to(inputs_embeds.device)
-        outputs = components.teacher_lm(inputs_embeds=inputs_embeds, attention_mask=attention_mask)
+        outputs = teacher_lm(inputs_embeds=inputs_embeds, attention_mask=attention_mask)
         if hasattr(outputs, "logits"):
             return outputs.logits
         hidden_states = _first_tensor(outputs)
-        if components.teacher_lm_head is None:
+        if teacher_lm_head is None:
             raise ValueError("Teacher LLM output has no logits and no teacher_lm_head_path was resolved.")
-        return components.teacher_lm_head(hidden_states)
+        return teacher_lm_head(hidden_states)
 
     def _align_visual_dim(self, visual_embeds, teacher_dim: int):
         import torch
@@ -392,6 +501,31 @@ class VisualSwitchDistiller:
             return None
         return int(token_id)
 
+    def _generate_for_sample_from_projected_visual(self, *, sample: VlmSample, prompt: str, projected_visual):
+        teacher_inputs = self._teacher_text_inputs(prompt)
+        switched_embeds, attention_mask = self._splice_visual_embeds(
+            teacher_inputs=teacher_inputs,
+            projected_visual=projected_visual,
+        )
+        switch_logits = self._teacher_lm_forward(
+            inputs_embeds=switched_embeds,
+            attention_mask=attention_mask,
+        )
+        cached_logits = _compact_adaptive_sequence_logits(
+            switch_logits,
+            base_k=int(self.config.distillation.dbild_top_k),
+            max_cached_logits_vocab=self.config.distillation.max_cached_logits_vocab,
+            temperature=float(self.config.distillation.kd_temperature),
+        )
+        field = self.config.distillation.switch_logits_field
+        return {
+            field: cached_logits,
+            f"{field}_format": "switch_kd",
+            f"{field}_prompt_len": int(teacher_inputs["input_ids"].shape[1]),
+            f"{field}_vocab_size": int(switch_logits.shape[-1]),
+            f"{field}_temperature": float(self.config.distillation.kd_temperature),
+        }
+
 def create_visual_switch_dataset(config: PipelineConfig) -> Path:
     samples = validate_manifest(
         config.data.manifest_path,
@@ -416,12 +550,45 @@ def create_visual_switch_dataset(config: PipelineConfig) -> Path:
     base_rows = _load_switch_base_rows(config)
     rows_by_id = {str(row["id"]): row for row in base_rows}
     distiller = VisualSwitchDistiller(config)
+    use_student_visual_cache = bool(config.distillation.switch_cache_student_visual)
+
+    if use_student_visual_cache and not distiller._is_mock_mode():
+        cache_dir = _student_visual_cache_dir(config, output_path)
+        print(
+            f"[switch-logits] student visual cache phase starting: "
+            f"pending={len(pending_samples)} cache_dir={cache_dir}"
+        )
+        distiller.load_student_only()
+        cached_now = 0
+        for sample in pending_samples:
+            cache_path = _student_visual_cache_path(cache_dir, sample)
+            if cache_path.exists():
+                print(f"[switch-logits][student-cache] sample_id={sample.id} cache_exists path={cache_path}")
+                continue
+            started = time.perf_counter()
+            distiller.generate_student_visual_cache_for_sample(sample, cache_path)
+            cached_now += 1
+            elapsed = time.perf_counter() - started
+            print(
+                f"[switch-logits][student-cache] sample_id={sample.id} cached "
+                f"elapsed_seconds={elapsed:.2f} cache_path={cache_path}"
+            )
+        print("[switch-logits] unloading student model before teacher phase.")
+        distiller.unload_student()
+        print("[switch-logits] student unloaded; gc.collect() and torch.cuda.empty_cache() completed.")
+        print("[switch-logits] teacher phase starting.")
+        distiller.load_teacher_only()
+
     completed_now = 0
     with output_path.open("a", encoding="utf-8") as handle:
         for sample in pending_samples:
             started = time.perf_counter()
             row = dict(rows_by_id.get(sample.id, asdict(sample)))
-            row.update(distiller.generate_for_sample(sample))
+            if use_student_visual_cache and not distiller._is_mock_mode():
+                cache_path = _student_visual_cache_path(cache_dir, sample)
+                row.update(distiller.generate_for_sample_from_visual_cache(sample, cache_path))
+            else:
+                row.update(distiller.generate_for_sample(sample))
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
             handle.flush()
             completed_now += 1
@@ -463,6 +630,18 @@ def _load_switch_base_rows(config: PipelineConfig) -> list[dict[str, Any]]:
         if path.exists():
             return read_jsonl(path)
     return []
+
+
+def _student_visual_cache_dir(config: PipelineConfig, output_path: Path) -> Path:
+    configured = config.distillation.student_visual_cache_dir
+    if configured is not None:
+        return configured
+    return output_path.parent / f"{output_path.stem}_student_visual_cache"
+
+
+def _student_visual_cache_path(cache_dir: Path, sample: VlmSample) -> Path:
+    sample_key = quote(str(sample.id), safe="-_.")
+    return cache_dir / f"{sample_key}.pt"
 
 
 def _resolve_component(model, configured_path: str | None, candidates: tuple[str, ...], label: str):

@@ -61,6 +61,19 @@ def module_device(module):
         return None
 
 
+def get_module_by_path(model, path: str) -> object | None:
+    if model is None or not path:
+        return None
+
+    parts = path.split(".")
+    current = model
+    for part in parts:
+        if current is None or not hasattr(current, part):
+            return None
+        current = getattr(current, part)
+    return current
+
+
 def batch_to_device(batch: dict[str, Any], device):
     if device is None:
         return batch
@@ -121,7 +134,15 @@ def print_stage_model_debug(
     model,
     selected_input_device,
 ) -> None:
+    import torch
+
     info = model_debug_info(model)
+    model_class = f"{type(model).__module__}.{type(model).__qualname__}"
+    cuda_is_available = torch.cuda.is_available()
+    cuda_device_count = torch.cuda.device_count()
+    print(f"{stage_label} torch.cuda.is_available():", cuda_is_available)
+    print(f"{stage_label} torch.cuda.device_count():", cuda_device_count)
+    print(f"{stage_label} exact model class:", model_class)
     print(f"{stage_label} resolved model path:", model_path)
     print(f"{stage_label} quantization mode:", quantization_mode)
     print(f"{stage_label} requested device_map:", requested_device_map)

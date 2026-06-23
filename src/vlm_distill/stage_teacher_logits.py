@@ -11,6 +11,7 @@ from .data_manifest import VlmSample, read_jsonl, validate_manifest
 from .device_utils import (
     batch_to_device,
     ensure_stage_uses_cuda,
+    get_module_by_path,
     print_stage_model_debug,
     resolve_requested_device_map,
     select_model_input_device,
@@ -114,7 +115,12 @@ class TeacherLogitsGenerator:
         ).eval()
         self._input_device = select_model_input_device(
             self._model,
-            preferred_modules=(getattr(self._model, "visual", None),),
+            preferred_modules=(
+                get_module_by_path(self._model, "model.visual"),
+                get_module_by_path(self._model, "visual"),
+                get_module_by_path(self._model, "model.language_model.embed_tokens"),
+                get_module_by_path(self._model, "model.language_model"),
+            ),
             label="Teacher",
         )
         print_stage_model_debug(

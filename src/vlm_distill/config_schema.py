@@ -93,6 +93,9 @@ class DistillationConfig:
     teacher_lm_path: str | None = None
     teacher_token_embedding_path: str | None = None
     teacher_lm_head_path: str | None = None
+    switch_cache_student_visual: bool = False
+    student_visual_cache_dir: Path | None = None
+    keep_student_visual_cache_on_cpu: bool = True
     visual_token_placeholder: str = "<image>"
     max_cached_logits_vocab: int | None = 4096
     align_kd_logits_to_answer: bool = True
@@ -231,6 +234,8 @@ def _build_distillation_config(raw: dict[str, Any]) -> DistillationConfig:
     ):
         if values.get(key) is not None:
             values[key] = remap_output_path_string(values[key])
+    if values.get("student_visual_cache_dir") is not None:
+        values["student_visual_cache_dir"] = remap_output_path(Path(values["student_visual_cache_dir"]))
     return DistillationConfig(**values)
 
 
