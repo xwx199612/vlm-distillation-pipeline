@@ -52,14 +52,15 @@ training:
   learning_rate: 0.0001
   warmup_ratio: 0.03
   max_steps:
-  log_every: 10
-  save_every: 250
-  mixed_precision: fp16
-  gradient_checkpointing: true
+  log_every: 50
+  save_every: 1000
+  mixed_precision: bf16           # 伺服器 GPU 支援 bf16 時 否則為 fp16
+  gradient_checkpointing: false   # 只有 VRAM 夠時才關
   image_resize: "{quality}"
   max_length: 4096
   freeze_vision_tower: true
   mask_prompt_labels: true
+
 
 distillation:
   prompt_template: |
