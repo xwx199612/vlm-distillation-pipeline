@@ -13,7 +13,12 @@ from .config_schema import (
     resolve_teacher_logits_path,
 )
 from .data_manifest import read_jsonl
-from .device_utils import ensure_stage_uses_cuda, print_stage_model_debug, select_model_input_device
+from .device_utils import (
+    ensure_stage_uses_cuda,
+    get_module_by_path,
+    print_stage_model_debug,
+    select_model_input_device,
+)
 from .logits_cache_utils import (
     align_reference_logits,
     align_reference_logits_to_suffix,
@@ -86,6 +91,7 @@ class VocabAlignment:
 
 def train_student(config: PipelineConfig) -> Path:
     rows = _load_training_rows(config)
+    _print_training_row_summary(config, rows)
     config.student.output_dir.mkdir(parents=True, exist_ok=True)
     config.student.adapter_dir.mkdir(parents=True, exist_ok=True)
 
@@ -127,7 +133,12 @@ def _train_hf_student(config: PipelineConfig, rows: list[dict]) -> Path:
     model = _load_student_model(config, student_model_path)
     selected_input_device = select_model_input_device(
         model,
-        preferred_modules=(getattr(model, "visual", None),),
+        preferred_modules=(
+            get_module_by_path(model, "model.visual"),
+            get_module_by_path(model, "visual"),
+            get_module_by_path(model, "model.language_model.embed_tokens"),
+            get_module_by_path(model, "model.language_model"),
+        ),
         label="Train",
     )
     print_stage_model_debug(
@@ -201,6 +212,8 @@ def _train_hf_student(config: PipelineConfig, rows: list[dict]) -> Path:
 
 
 def _load_student_model(config: PipelineConfig, model_path: str | None = None):
+    import torch
+
     try:
         from transformers import AutoModelForImageTextToText as AutoModelForVLM
     except ImportError:  # pragma: no cover - fallback for older transformers
@@ -216,7 +229,7 @@ def _load_student_model(config: PipelineConfig, model_path: str | None = None):
 
         model_kwargs["quantization_config"] = BitsAndBytesConfig(
             load_in_4bit=True,
-            bnb_4bit_compute_dtype="float16",
+            bnb_4bit_compute_dtype=torch.float16,
             bnb_4bit_use_double_quant=True,
             bnb_4bit_quant_type="nf4",
         )
@@ -545,17 +558,31 @@ def _remap_reference_logits_to_student_vocab(
 def _warn_if_switch_logits_missing(config: PipelineConfig, rows: list[dict]) -> None:
     teacher_field = config.distillation.teacher_logits_field
     switch_field = config.distillation.switch_logits_field
-    has_teacher = rows and teacher_field in rows[0]
-    has_switch = rows and switch_field in rows[0]
-    if not has_teacher:
-        print(
-            f"Warning: Switch-KD method selected but '{teacher_field}' is missing. "
-            "DBiLD teacher supervision will be skipped."
+    total_rows = len(rows)
+    teacher_rows = sum(1 for row in rows if row.get(teacher_field) is not None)
+    switch_rows = sum(1 for row in rows if row.get(switch_field) is not None)
+
+    if total_rows == 0:
+        raise RuntimeError("Switch-KD method selected but no training rows were loaded.")
+    if teacher_rows == 0:
+        raise RuntimeError(
+            f"Switch-KD method selected but all rows are missing '{teacher_field}'. "
+            "DBiLD teacher supervision would be fully disabled."
         )
-    if not has_switch:
+    if switch_rows == 0:
+        raise RuntimeError(
+            f"Switch-KD method selected but all rows are missing '{switch_field}'. "
+            "VSD supervision would be fully disabled. Precompute visual-switch logits or add an online VSD hook."
+        )
+    if teacher_rows < total_rows:
         print(
-            f"Warning: Switch-KD method selected but '{switch_field}' is missing. "
-            "VSD supervision will be skipped. Precompute visual-switch logits or add an online VSD hook."
+            f"Warning: Switch-KD rows missing '{teacher_field}': "
+            f"{total_rows - teacher_rows}/{total_rows}. DBiLD teacher supervision will be skipped for those rows."
+        )
+    if switch_rows < total_rows:
+        print(
+            f"Warning: Switch-KD rows missing '{switch_field}': "
+            f"{total_rows - switch_rows}/{total_rows}. VSD supervision will be skipped for those rows."
         )
 
 
@@ -581,6 +608,42 @@ def _load_training_rows(config: PipelineConfig) -> list[dict[str, Any]]:
                 rows_by_id[row_id].update(row)
 
     return [rows_by_id[row_id] for row_id in ordered_ids]
+
+
+def _print_training_row_summary(config: PipelineConfig, rows: list[dict[str, Any]]) -> None:
+    teacher_field = config.distillation.teacher_logits_field
+    switch_field = config.distillation.switch_logits_field
+    teacher_answer_rows = sum(1 for row in rows if row.get("teacher_answer") is not None)
+    teacher_logits_rows = sum(1 for row in rows if row.get(teacher_field) is not None)
+    switch_logits_rows = sum(1 for row in rows if row.get(switch_field) is not None)
+    teacher_vocab_sizes = sorted(
+        {
+            int(value)
+            for row in rows
+            if (value := row.get(f"{teacher_field}_vocab_size")) is not None
+        }
+    )
+    switch_vocab_sizes = sorted(
+        {
+            int(value)
+            for row in rows
+            if (value := row.get(f"{switch_field}_vocab_size")) is not None
+        }
+    )
+
+    print("Student training data summary:")
+    print(f"  total rows: {len(rows)}")
+    print(f"  rows with teacher_answer: {teacher_answer_rows}")
+    print(f"  rows with {teacher_field}: {teacher_logits_rows}")
+    print(f"  rows with {switch_field}: {switch_logits_rows}")
+    print(
+        "  teacher_logits vocab sizes:",
+        teacher_vocab_sizes if teacher_vocab_sizes else "none",
+    )
+    print(
+        "  switch_logits vocab sizes:",
+        switch_vocab_sizes if switch_vocab_sizes else "none",
+    )
 
 
 def _training_data_paths(config: PipelineConfig) -> list[Path]:
