@@ -122,10 +122,20 @@ class HuggingFaceTeacher:
         )
         
         device_map = getattr(self.model, "hf_device_map", None)
-        print("Teacher device map:", device_map)        
+        print("Teacher device map:", device_map)
+        
+        cpu_parts = []
         if device_map:
             cpu_parts = [k for k, v in device_map.items() if str(v) in {"cpu", "disk"}]
+        
         print("Teacher CPU/DISK offload parts:", cpu_parts)
+        
+        try:
+            first_param = next(self.model.parameters())
+            print("Teacher first parameter device:", first_param.device)
+            print("Teacher first parameter dtype:", first_param.dtype)
+        except StopIteration:
+            pass
         
     def answer(self, sample: VlmSample) -> dict:
         image_path = self.config.data.image_root / sample.image
