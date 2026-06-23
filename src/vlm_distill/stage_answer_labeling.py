@@ -120,12 +120,14 @@ class HuggingFaceTeacher:
             **model_kwargs,
             local_files_only=True,
         )
-        device_map = getattr(self.model, "hf_device_map", None)
-        print("Teacher device map:", device_map)
         
+        device_map = getattr(self.model, "hf_device_map", None)
+        print("Teacher device map:", device_map)        
         if device_map:
             cpu_parts = [k for k, v in device_map.items() if str(v) in {"cpu", "disk"}]
-    print("Teacher CPU/DISK offload parts:", cpu_parts)    def answer(self, sample: VlmSample) -> dict:
+        print("Teacher CPU/DISK offload parts:", cpu_parts)
+        
+    def answer(self, sample: VlmSample) -> dict:
         image_path = self.config.data.image_root / sample.image
         image = _load_teacher_image(image_path, self.config.teacher.image_resize)
 
