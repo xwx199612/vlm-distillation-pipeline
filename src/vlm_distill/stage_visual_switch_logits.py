@@ -13,6 +13,14 @@ from .config_schema import (
     resolve_teacher_logits_path,
 )
 from .data_manifest import VlmSample, read_jsonl, validate_manifest, write_jsonl
+from .device_utils import (
+    batch_to_device,
+    ensure_stage_uses_cuda,
+    module_device,
+    print_stage_model_debug,
+    resolve_requested_device_map,
+    select_model_input_device,
+)
 from .model_loading import resolve_attn_implementation, resolve_model_path
 
 
@@ -47,6 +55,8 @@ class VisualSwitchDistiller:
         self._student_processor = None
         self._teacher_processor = None
         self._aligner = None
+        self._student_input_device = None
+        self._teacher_text_device = None
 
     def load(self) -> None:
         if self._is_mock_mode():
@@ -62,6 +72,11 @@ class VisualSwitchDistiller:
 
         student_model_path = resolve_model_path(self.config.student.model_name)
         teacher_model_path = resolve_model_path(self.config.teacher.model_name)
+        teacher_requested_device_map = resolve_requested_device_map(
+            self.config.teacher.device_map,
+            quantization=getattr(self.config.teacher, "quantization", "none"),
+            role="teacher",
+        )
         self._torch = torch
         self._student_processor = AutoProcessor.from_pretrained(
             student_model_path,
@@ -76,6 +91,7 @@ class VisualSwitchDistiller:
         self._student_model = AutoModelForVLM.from_pretrained(
             student_model_path,
             **_build_vlm_load_kwargs(
+                requested_device_map="auto",
                 quantization=getattr(self.config.student, "quantization", "none"),
                 torch_dtype=None,
                 attn_implementation=self.config.student.attn_implementation,
@@ -85,12 +101,52 @@ class VisualSwitchDistiller:
         self._teacher_model = AutoModelForVLM.from_pretrained(
             teacher_model_path,
             **_build_vlm_load_kwargs(
+                requested_device_map=teacher_requested_device_map,
                 quantization=getattr(self.config.teacher, "quantization", "none"),
                 torch_dtype=getattr(self.config.teacher, "torch_dtype", None),
                 attn_implementation=self.config.teacher.attn_implementation,
                 BitsAndBytesConfig=BitsAndBytesConfig,
             ),
         ).eval()
+        components = self._components()
+        self._student_input_device = select_model_input_device(
+            self._student_model,
+            preferred_modules=(components.student_vision, getattr(self._student_model, "visual", None)),
+            label="Switch logits student",
+        )
+        self._teacher_text_device = select_model_input_device(
+            self._teacher_model,
+            preferred_modules=(components.teacher_token_embedding, components.teacher_lm),
+            label="Switch logits teacher",
+        )
+        print_stage_model_debug(
+            stage_label="Switch logits student",
+            model_path=student_model_path,
+            quantization_mode=getattr(self.config.student, "quantization", "none"),
+            requested_device_map="auto",
+            model=self._student_model,
+            selected_input_device=self._student_input_device,
+        )
+        ensure_stage_uses_cuda(
+            stage_label="Switch logits student",
+            requested_device_map="auto",
+            model=self._student_model,
+            selected_input_device=self._student_input_device,
+        )
+        print_stage_model_debug(
+            stage_label="Switch logits teacher",
+            model_path=teacher_model_path,
+            quantization_mode=getattr(self.config.teacher, "quantization", "none"),
+            requested_device_map=teacher_requested_device_map,
+            model=self._teacher_model,
+            selected_input_device=self._teacher_text_device,
+        )
+        ensure_stage_uses_cuda(
+            stage_label="Switch logits teacher",
+            requested_device_map=teacher_requested_device_map,
+            model=self._teacher_model,
+            selected_input_device=self._teacher_text_device,
+        )
 
     def generate_for_sample(self, sample: VlmSample) -> dict[str, Any]:
         if self._is_mock_mode():
@@ -238,12 +294,12 @@ class VisualSwitchDistiller:
 
     def _student_image_inputs(self, image):
         student_inputs = _processor_image_inputs(self._student_processor, image)
-        return _move_batch(student_inputs, _module_device(self._student_model))
+        return batch_to_device(student_inputs, self._student_input_device)
 
     def _student_visual_outputs(self, student_inputs):
         components = self._components()
-        device = _module_device(components.student_vision)
-        vision_inputs = _move_batch(student_inputs, device)
+        device = module_device(components.student_vision)
+        vision_inputs = batch_to_device(student_inputs, device)
         vision_kwargs = _build_vision_forward_kwargs(components.student_vision, vision_inputs)
         outputs = components.student_vision(**vision_kwargs)
         return _first_tensor(outputs)
@@ -260,9 +316,7 @@ class VisualSwitchDistiller:
 
     def _teacher_text_inputs(self, prompt: str):
         inputs = self._teacher_processor(text=prompt, return_tensors="pt")
-        components = self._components()
-        device = _module_device(components.teacher_token_embedding)
-        return _move_batch(inputs, device)
+        return batch_to_device(inputs, self._teacher_text_device)
 
     def _splice_visual_embeds(self, teacher_inputs, projected_visual):
         import torch
@@ -299,7 +353,8 @@ class VisualSwitchDistiller:
 
     def _teacher_lm_forward(self, inputs_embeds, attention_mask):
         components = self._components()
-        inputs_embeds = inputs_embeds.to(_module_device(components.teacher_lm))
+        lm_device = module_device(components.teacher_lm) or self._teacher_text_device
+        inputs_embeds = inputs_embeds.to(lm_device)
         attention_mask = attention_mask.to(inputs_embeds.device)
         outputs = components.teacher_lm(inputs_embeds=inputs_embeds, attention_mask=attention_mask)
         if hasattr(outputs, "logits"):
@@ -428,19 +483,6 @@ def _should_invoke_component(value, name: str) -> bool:
     return len(required) == 0
 
 
-def _module_device(module):
-    try:
-        return next(module.parameters()).device
-    except StopIteration:
-        return None
-
-
-def _move_batch(batch, device):
-    if device is None:
-        return batch
-    return {key: value.to(device) if hasattr(value, "to") else value for key, value in batch.items()}
-
-
 def _processor_image_inputs(processor, image):
     try:
         return processor(images=image, return_tensors="pt")
@@ -467,6 +509,7 @@ def _processor_image_inputs(processor, image):
 
 def _build_vlm_load_kwargs(
     *,
+    requested_device_map: str,
     quantization: str | None,
     torch_dtype: str | None,
     attn_implementation: str,
@@ -475,7 +518,7 @@ def _build_vlm_load_kwargs(
     import torch
 
     model_kwargs: dict[str, Any] = {
-        "device_map": "auto",
+        "device_map": requested_device_map,
         "trust_remote_code": True,
         "local_files_only": True,
         "offload_buffers": True,

@@ -7,6 +7,13 @@ from typing import Any, Literal
 
 from .config_schema import PipelineConfig, resolve_teacher_logits_path
 from .data_manifest import VlmSample, validate_manifest, write_jsonl
+from .device_utils import (
+    batch_to_device,
+    ensure_stage_uses_cuda,
+    print_stage_model_debug,
+    resolve_requested_device_map,
+    select_model_input_device,
+)
 from .model_loading import apply_attn_implementation, resolve_model_path
 from .stage_answer_labeling import _load_teacher_image
 
@@ -42,6 +49,7 @@ class TeacherLogitsGenerator:
         self.config = config
         self._model = None
         self._processor = None
+        self._input_device = None
 
     def load(self) -> None:
         if self.config.teacher.backend == "mock":
@@ -62,6 +70,11 @@ class TeacherLogitsGenerator:
             from transformers import AutoModelForVision2Seq as AutoModelForVLM
 
         model_path = resolve_model_path(self.config.teacher.model_name)
+        requested_device_map = resolve_requested_device_map(
+            self.config.teacher.device_map,
+            quantization=self.config.teacher.quantization,
+            role="teacher",
+        )
         self._processor = AutoProcessor.from_pretrained(
             model_path,
             trust_remote_code=True,
@@ -69,7 +82,7 @@ class TeacherLogitsGenerator:
         )
 
         model_kwargs: dict[str, Any] = {
-            "device_map": self.config.teacher.device_map or "auto",
+            "device_map": requested_device_map,
             "trust_remote_code": True,
         }
         apply_attn_implementation(model_kwargs, self.config.teacher.attn_implementation)
@@ -98,6 +111,25 @@ class TeacherLogitsGenerator:
             **model_kwargs,
             local_files_only=True,
         ).eval()
+        self._input_device = select_model_input_device(
+            self._model,
+            preferred_modules=(getattr(self._model, "visual", None),),
+            label="Teacher",
+        )
+        print_stage_model_debug(
+            stage_label="Teacher logits",
+            model_path=model_path,
+            quantization_mode=self.config.teacher.quantization,
+            requested_device_map=requested_device_map,
+            model=self._model,
+            selected_input_device=self._input_device,
+        )
+        ensure_stage_uses_cuda(
+            stage_label="Teacher logits",
+            requested_device_map=requested_device_map,
+            model=self._model,
+            selected_input_device=self._input_device,
+        )
 
     def generate_for_sample(
         self,
@@ -123,7 +155,7 @@ class TeacherLogitsGenerator:
         with torch.no_grad():
             inputs = self._build_multimodal_inputs(image, prompt)
             prompt_len = int(inputs["input_ids"].shape[1])
-            inputs = _move_batch_to_device(inputs, _model_device(self._model))
+            inputs = batch_to_device(inputs, self._input_device)
 
             include_scores = mode in {"adaptive_topk", "switch_kd"}
             generation = self._generate(inputs, include_scores=include_scores)
@@ -652,18 +684,3 @@ def _mock_answer(sample: VlmSample) -> str:
         )
 
     return f"mock answer for {sample.task}"
-def _move_batch_to_device(batch: dict[str, Any], device):
-    return {
-        key: value.to(device) if hasattr(value, "to") else value
-        for key, value in batch.items()
-    }
-
-
-def _model_device(model):
-    if hasattr(model, "device"):
-        return model.device
-
-    try:
-        return next(model.parameters()).device
-    except StopIteration as exc:
-        raise RuntimeError("Could not determine model device.") from exc

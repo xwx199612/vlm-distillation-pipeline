@@ -13,6 +13,7 @@ from .config_schema import (
     resolve_teacher_logits_path,
 )
 from .data_manifest import read_jsonl
+from .device_utils import ensure_stage_uses_cuda, print_stage_model_debug, select_model_input_device
 from .logits_cache_utils import (
     align_reference_logits,
     align_reference_logits_to_suffix,
@@ -124,6 +125,25 @@ def _train_hf_student(config: PipelineConfig, rows: list[dict]) -> Path:
         local_files_only=True,
     )
     model = _load_student_model(config, student_model_path)
+    selected_input_device = select_model_input_device(
+        model,
+        preferred_modules=(getattr(model, "visual", None),),
+        label="Train",
+    )
+    print_stage_model_debug(
+        stage_label="Train",
+        model_path=student_model_path,
+        quantization_mode=config.student.quantization,
+        requested_device_map="auto",
+        model=model,
+        selected_input_device=selected_input_device,
+    )
+    ensure_stage_uses_cuda(
+        stage_label="Train",
+        requested_device_map="auto",
+        model=model,
+        selected_input_device=selected_input_device,
+    )
 
     if config.student.quantization in {"4bit", "8bit"}:
         model = prepare_model_for_kbit_training(model)

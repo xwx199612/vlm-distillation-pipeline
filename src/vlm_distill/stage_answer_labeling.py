@@ -16,6 +16,7 @@ from urllib.parse import urljoin
 
 from .config_schema import PipelineConfig, format_prompt, resolve_label_path
 from .data_manifest import VlmSample, read_jsonl
+from .device_utils import normalize_device_location, resolve_requested_device_map, select_model_input_device
 from .model_loading import apply_attn_implementation, resolve_model_path
 
 
@@ -76,6 +77,11 @@ class HuggingFaceTeacher:
             ) from exc
 
         model_path = resolve_model_path(config.teacher.model_name)
+        requested_device_map = resolve_requested_device_map(
+            config.teacher.device_map,
+            quantization=config.teacher.quantization,
+            role="teacher",
+        )
         self.processor = AutoProcessor.from_pretrained(
             model_path,
             trust_remote_code=True,
@@ -91,7 +97,7 @@ class HuggingFaceTeacher:
                 f"Allowed values: {sorted(allowed_quantization)}"
             )
         model_kwargs = {
-            "device_map": config.teacher.device_map or "auto",
+            "device_map": requested_device_map,
             "trust_remote_code": True,
         }
         apply_attn_implementation(model_kwargs, config.teacher.attn_implementation)
@@ -120,23 +126,42 @@ class HuggingFaceTeacher:
             **model_kwargs,
             local_files_only=True,
         )
-        
+
         device_map = getattr(self.model, "hf_device_map", None)
-        print("Teacher device map:", device_map)
-        
         cpu_parts = []
         if device_map:
             cpu_parts = [k for k, v in device_map.items() if str(v) in {"cpu", "disk"}]
-        
-        print("Teacher CPU/DISK offload parts:", cpu_parts)
-        
+
         try:
             first_param = next(self.model.parameters())
-            print("Teacher first parameter device:", first_param.device)
-            print("Teacher first parameter dtype:", first_param.dtype)
+            first_param_device = first_param.device
+            first_param_dtype = first_param.dtype
         except StopIteration:
-            pass
-        
+            first_param_device = None
+            first_param_dtype = None
+
+        print("Teacher resolved model path:", model_path)
+        print("Teacher quantization mode:", config.teacher.quantization)
+        print("Teacher requested device_map:", requested_device_map)
+        print("Teacher hf_device_map:", device_map)
+        print("Teacher CPU/DISK offload parts:", cpu_parts)
+        print("Teacher first parameter device:", first_param_device)
+        print("Teacher first parameter dtype:", first_param_dtype)
+
+        has_cuda_in_map = bool(device_map) and any(
+            (device := normalize_device_location(v)) is not None and device.type == "cuda"
+            for v in device_map.values()
+        )
+        has_cuda_first_param = first_param_device is not None and first_param_device.type == "cuda"
+        if not has_cuda_in_map and not has_cuda_first_param:
+            raise RuntimeError(
+                "Teacher model did not place on CUDA. "
+                f"requested device_map={requested_device_map!r}, "
+                f"hf_device_map={device_map!r}, "
+                f"first_param_device={first_param_device!r}. "
+                "Refusing to continue with a CPU-loaded teacher."
+            )
+
     def answer(self, sample: VlmSample) -> dict:
         image_path = self.config.data.image_root / sample.image
         image = _load_teacher_image(image_path, self.config.teacher.image_resize)
@@ -196,7 +221,7 @@ class HuggingFaceTeacher:
             text=[text],
             images=[image],
             return_tensors="pt",
-        ).to(self.model.device)
+        ).to(select_model_input_device(self.model, preferred_modules=(getattr(self.model, "visual", None),), label="Teacher"))
 
         generation_kwargs = {
             "do_sample": self.config.teacher.temperature > 0,
