@@ -27,7 +27,7 @@ teacher:
   torch_dtype: float16
   quantization: "{teacher_quantization}"
   temperature: 0.0
-  max_new_tokens: 96
+  max_new_tokens: 512
   image_resize: "{quality}"
 
 student:
