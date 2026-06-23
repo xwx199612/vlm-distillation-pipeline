@@ -23,11 +23,11 @@ data:
 teacher:
   backend: hf
   model_name: Qwen/Qwen2.5-VL-7B-Instruct
-  device_map: auto
-  torch_dtype: bfloat16
+  device_map: balanced_low_0
+  torch_dtype: float16
   quantization: "{teacher_quantization}"
   temperature: 0.0
-  max_new_tokens: 128
+  max_new_tokens: 96
   image_resize: "{quality}"
 
 student:
@@ -35,8 +35,8 @@ student:
   output_dir: outputs/switch-kd/{task_name}_switch_kd_{response_profile}
   adapter_dir: outputs/switch-kd/{task_name}_switch_kd_{response_profile}/adapter
   use_lora: true
-  lora_rank: 32
-  lora_alpha: 64
+  lora_rank: 16
+  lora_alpha: 32
   lora_dropout: 0.05
   target_modules:
     - q_proj
@@ -48,16 +48,16 @@ student:
 training:
   epochs: 3
   batch_size: 1
-  gradient_accumulation_steps: 8
+  gradient_accumulation_steps: 16
   learning_rate: 0.0001
   warmup_ratio: 0.03
   max_steps:
   log_every: 10
   save_every: 250
-  mixed_precision: bf16
+  mixed_precision: fp16
   gradient_checkpointing: true
   image_resize: "{quality}"
-  max_length: 1024
+  max_length: 512
   freeze_vision_tower: true
   mask_prompt_labels: true
 
@@ -81,7 +81,7 @@ distillation:
   teacher_token_embedding_path: model.language_model.embed_tokens
   teacher_lm_head_path: lm_head
   visual_token_placeholder: "<|image_pad|>"
-  max_cached_logits_vocab: 8192
+  max_cached_logits_vocab: 4096
   align_kd_logits_to_answer: true
   skip_kd_on_vocab_mismatch: true
 
