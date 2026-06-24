@@ -47,26 +47,25 @@ def encode_vlm_training_sample(
     return EncodedVlmSample(model_inputs=model_inputs, prompt_token_len=prompt_token_len)
 
 
-def build_vlm_data_collator(processor) -> "VlmDataCollator":
+def build_vlm_data_collator(processor, *, logits_fields=("teacher_logits", "switch_logits")):
     pad_token_id = _resolve_pad_token_id(processor)
-    return VlmDataCollator(pad_token_id=pad_token_id)
+    return VlmDataCollator(pad_token_id=pad_token_id, logits_fields=logits_fields)
 
 
-class VlmDataCollator:
-    """Pad multimodal features; keep cached logits as per-sample payloads."""
-
-    _LOGITS_FIELDS = ("teacher_logits", "switch_logits")
-    _SKIP_KEYS = frozenset(
-        {"prompt_token_len", "image", "id", "query", "target_label", "target_type", "answer", "metadata"}
-    )
-
-    def __init__(self, pad_token_id: int = 0):
+class VlmDataCollator:    """Pad multimodal features; keep cached logits as per-sample payloads."""
+    def __init__(
+        self,
+        pad_token_id: int = 0,
+        logits_fields: tuple[str, str] = ("teacher_logits", "switch_logits"),
+    ):
         self.pad_token_id = pad_token_id
+        self.logits_fields = logits_fields
 
     def __call__(self, features: list[dict[str, Any]]) -> dict[str, Any]:
         import torch
 
         logits_payload = {field: [feature.pop(field, None) for feature in features] for field in self._LOGITS_FIELDS}
+        logits_payload = {field: [feature.pop(field, None) for feature in features] for field in self.logits_fields}
         prompt_token_lens = [int(feature.pop("prompt_token_len", 0)) for feature in features]
         metadata: dict[str, Any] = {}
         for feature in features:
