@@ -21,7 +21,13 @@ from vlm_distill.config_schema import (
 from vlm_distill.data_manifest import VlmSample, summarize_label_rows, validate_manifest
 from vlm_distill.manifest_builder import infer_manifest_task_from_config_path
 from vlm_distill.stage_answer_labeling import _format_prompt, _load_teacher_image
-from vlm_distill.stage_teacher_logits import TeacherLogitsGenerator, _resolve_teacher_logits_mode
+from vlm_distill.stage_teacher_logits import (
+    TeacherLogitsGenerator,
+    _is_valid_logits_row,
+    _load_completed_ids,
+    _resolve_teacher_logits_mode,
+    create_teacher_logits_dataset,
+)
 from vlm_distill.vlm_batching import load_training_image
 
 
@@ -231,6 +237,68 @@ def test_teacher_logits_command_uses_adaptive_topk_for_switch_kd_config(tmp_path
     assert _resolve_teacher_logits_mode(config) == "adaptive_topk"
 
 
+def test_teacher_logits_switch_kd_ignores_label_only_completed_rows(tmp_path: Path):
+    output_path = tmp_path / "teacher_logits.jsonl"
+    output_path.write_text(
+        json.dumps(
+            {
+                "id": "sample-1",
+                "teacher_answer": "answer",
+                "teacher_generated_ids": [[1, 2]],
+                "teacher_rationale": "label only",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    completed = _load_completed_ids(output_path, field_name="teacher_logits", require_logits=True)
+
+    assert completed.ids == set()
+    assert completed.valid_count == 0
+    assert completed.invalid_count == 1
+    assert completed.first_invalid_keys == [
+        "id",
+        "teacher_answer",
+        "teacher_generated_ids",
+        "teacher_rationale",
+    ]
+
+
+def test_teacher_logits_row_validation_rejects_label_only_row():
+    assert not _is_valid_logits_row({"id": "x", "teacher_answer": "answer"}, "teacher_logits")
+
+
+def test_teacher_logits_switch_kd_mock_writes_logits_dict(tmp_path: Path):
+    image_root = tmp_path / "images"
+    _make_image(image_root / "screen.jpg")
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text(
+        json.dumps({"id": "sample-1", "image": "screen.jpg", "task": "parsing", "query": "q"}) + "\n",
+        encoding="utf-8",
+    )
+    output_path = tmp_path / "teacher_logits.jsonl"
+    config = PipelineConfig(
+        data=DataConfig(
+            manifest_path=manifest,
+            distill_path=tmp_path / "distill.jsonl",
+            teacher_logits_path=output_path,
+            image_root=image_root,
+        ),
+        teacher=TeacherConfig(model_name="mock-teacher", backend="mock"),
+        student=StudentConfig(model_name="mock-student", output_dir=tmp_path / "out", adapter_dir=tmp_path / "adapter"),
+        distillation=DistillationConfig(method="switch_kd"),
+    )
+
+    create_teacher_logits_dataset(config)
+    row = json.loads(output_path.read_text(encoding="utf-8").strip())
+
+    assert row["teacher_logits_format"] == "adaptive_topk"
+    assert row["teacher_logits_prompt_len"] == 0
+    assert row["teacher_logits_vocab_size"] == row["teacher_logits"]["vocab_size"]
+    assert _is_valid_logits_row(row, "teacher_logits")
+
+
 def test_load_config_accepts_legacy_teacher_label_quantization_option(tmp_path: Path):
     config_path = tmp_path / "response_legacy.yaml"
     config_path.write_text(
@@ -389,4 +457,3 @@ def test_summarize_label_rows_counts_teacher_answer_rows(tmp_path: Path):
         "teacher_answer_rows": 3,
         "non_empty_teacher_answer_rows": 2,
     }
-

@@ -5,7 +5,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  bash scripts/run_parallel_switch_kd_precompute_4gpu.sh [--dry-run] <stage>
+  bash scripts/run_parallel_switch_kd_precompute_4gpu.sh [--dry-run] [--clean-outputs] <stage>
 
 Stages:
   label
@@ -19,6 +19,7 @@ Examples:
   bash scripts/run_parallel_switch_kd_precompute_4gpu.sh switch-logits
   bash scripts/run_parallel_switch_kd_precompute_4gpu.sh all
   bash scripts/run_parallel_switch_kd_precompute_4gpu.sh --dry-run all
+  CLEAN_OUTPUTS=1 bash scripts/run_parallel_switch_kd_precompute_4gpu.sh teacher-logits
 
 What it does:
   - Changes directory to ~/vlm_distill/Switch-KD
@@ -30,17 +31,22 @@ What it does:
 
 Notes:
   - Resume behavior is preserved per shard because every worker writes to its own shard file.
-  - Existing shard outputs and logs are preserved for resume/debugging.
+  - Existing shard outputs and logs are preserved for resume/debugging unless CLEAN_OUTPUTS=1 or --clean-outputs is set.
   - `--dry-run` writes shard manifests and generated configs, prints planned commands, and skips worker launch/merge.
 EOF
 }
 
 DRY_RUN=0
+CLEAN_OUTPUTS="${CLEAN_OUTPUTS:-0}"
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run)
       DRY_RUN=1
+      shift
+      ;;
+    --clean-outputs|--force)
+      CLEAN_OUTPUTS=1
       shift
       ;;
     -h|--help)
@@ -158,6 +164,24 @@ print(f"[split-manifest] total_rows={len(rows)}")
 PY
 }
 
+clean_stage_outputs() {
+  local stage="$1"
+  if [[ "${CLEAN_OUTPUTS}" != "1" ]]; then
+    return 0
+  fi
+  if [[ "${stage}" != "teacher-logits" ]]; then
+    return 0
+  fi
+  echo "=== clean stale teacher logits shard outputs ==="
+  for gpu_index in 0 1 2 3; do
+    local shard_path="${SHARD_DIR}/parsing_teacher_logits_shard${gpu_index}.jsonl"
+    if [[ -f "${shard_path}" ]]; then
+      echo "Removing ${shard_path}"
+      rm -f "${shard_path}"
+    fi
+  done
+}
+
 generate_configs() {
   local stage="$1"
   STAGE_NAME="${stage}" python - <<'PY'
@@ -200,6 +224,13 @@ for gpu_index in range(4):
     with output_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(config_data, handle, sort_keys=False, allow_unicode=True)
     print(f"[generate-config] {output_path}")
+    if stage == "teacher-logits":
+        print(
+            "[generate-config-detail] "
+            f"gpu={gpu_index} distillation.method={config_data.get('distillation', {}).get('method')} "
+            f"teacher_logits_path={config_data.get('data', {}).get('teacher_logits_path')} "
+            f"teacher_logits_field={config_data.get('distillation', {}).get('teacher_logits_field')}"
+        )
 PY
 }
 
@@ -286,6 +317,9 @@ PY
     echo "  label=${SHARD_DIR}/parsing_teacher_labels_shard${gpu_index}.jsonl"
     if [[ "${stage}" == "teacher-logits" || "${stage}" == "switch-logits" ]]; then
       echo "  teacher_logits=${SHARD_DIR}/parsing_teacher_logits_shard${gpu_index}.jsonl"
+      if [[ -f "${SHARD_DIR}/parsing_teacher_logits_shard${gpu_index}.jsonl" ]]; then
+        echo "  WARNING: existing teacher_logits shard output will be resumed unless invalid rows are recomputed or CLEAN_OUTPUTS=1 is set"
+      fi
     fi
     if [[ "${stage}" == "switch-logits" ]]; then
       echo "  switch_logits=${SHARD_DIR}/parsing_switch_logits_shard${gpu_index}.jsonl"
@@ -310,6 +344,7 @@ run_stage() {
   local failed=0
 
   split_manifest
+  clean_stage_outputs "${stage}"
   generate_configs "${stage}"
   print_safety_checks "${stage}"
   print_stage_commands "${stage}"
@@ -379,6 +414,14 @@ else:
 
 rows: list[dict] = []
 seen_ids: set[str] = set()
+valid_logits_by_shard: dict[int, int] = {}
+
+def is_valid_logits_payload(payload: object) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if not all(key in payload for key in ("indices", "values", "vocab_size")):
+        return False
+    return bool(payload.get("indices")) and bool(payload.get("values"))
 
 for shard_index in range(4):
     shard_path = shard_dir / shard_template.format(gpu=shard_index)
@@ -406,7 +449,13 @@ for shard_index in range(4):
                     f"ERROR: duplicate id detected during {stage} merge: {sample_id_str}"
                 )
             seen_ids.add(sample_id_str)
+            if stage == "teacher-logits" and is_valid_logits_payload(row.get("teacher_logits")):
+                valid_logits_by_shard[shard_index] = valid_logits_by_shard.get(shard_index, 0) + 1
             rows.append(row)
+    if stage == "teacher-logits" and valid_logits_by_shard.get(shard_index, 0) <= 0:
+        raise SystemExit(
+            f"ERROR: teacher-logits shard has zero valid teacher_logits rows: {shard_path}"
+        )
 
 def sort_key(row: dict) -> tuple[int, object]:
     value = row["id"]
@@ -429,6 +478,17 @@ if expected_count and len(rows) != expected_count:
         f"ERROR: merged row count mismatch for {stage}: merged={len(rows)} expected={expected_count}"
     )
 
+if stage == "teacher-logits":
+    logits_rows = [row for row in rows if is_valid_logits_payload(row.get("teacher_logits"))]
+    if len(seen_ids) != len(rows):
+        raise SystemExit("ERROR: merged teacher logits ids are not unique")
+    if len(logits_rows) != len(rows):
+        raise SystemExit(
+            f"ERROR: merged teacher logits rows missing valid teacher_logits: valid={len(logits_rows)} total={len(rows)}"
+        )
+    if rows and not isinstance(rows[0].get("teacher_logits"), dict):
+        raise SystemExit("ERROR: first merged teacher logits row does not contain teacher_logits dict")
+
 final_output_path.parent.mkdir(parents=True, exist_ok=True)
 with final_output_path.open("w", encoding="utf-8") as handle:
     for row in rows:
@@ -437,6 +497,8 @@ with final_output_path.open("w", encoding="utf-8") as handle:
 print(f"Merged rows: {len(rows)}")
 print(f"Expected rows: {expected_count}")
 print(f"Merged output: {final_output_path}")
+if stage == "teacher-logits":
+    print(f"Validated teacher_logits rows: {len(rows)}")
 PY
 }
 

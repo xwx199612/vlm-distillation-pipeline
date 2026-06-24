@@ -194,9 +194,9 @@ class VisualSwitchDistiller:
             selected_input_device=self._teacher_text_device,
         )
 
-    def generate_for_sample(self, sample: VlmSample) -> dict[str, Any]:
+    def generate_for_sample(self, sample: VlmSample, *, base_row: dict[str, Any] | None = None) -> dict[str, Any]:
         if self._is_mock_mode():
-            return self._mock_generate_for_sample(sample)
+            return self._mock_generate_for_sample(sample, base_row=base_row)
         if self._student_model is None or self._teacher_model is None:
             self.load()
 
@@ -223,6 +223,7 @@ class VisualSwitchDistiller:
                 sample=sample,
                 prompt=prompt,
                 projected_visual=projected_visual,
+                base_row=base_row,
             )
 
     def generate_student_visual_cache_for_sample(self, sample: VlmSample, cache_path: Path) -> None:
@@ -257,9 +258,15 @@ class VisualSwitchDistiller:
             cache_path,
         )
 
-    def generate_for_sample_from_visual_cache(self, sample: VlmSample, cache_path: Path) -> dict[str, Any]:
+    def generate_for_sample_from_visual_cache(
+        self,
+        sample: VlmSample,
+        cache_path: Path,
+        *,
+        base_row: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         if self._is_mock_mode():
-            return self._mock_generate_for_sample(sample)
+            return self._mock_generate_for_sample(sample, base_row=base_row)
         if self._teacher_model is None:
             self.load_teacher_only()
 
@@ -277,6 +284,7 @@ class VisualSwitchDistiller:
                 sample=sample,
                 prompt=prompt,
                 projected_visual=projected_visual,
+                base_row=base_row,
             )
 
     def _is_mock_mode(self) -> bool:
@@ -284,7 +292,7 @@ class VisualSwitchDistiller:
         student_name = (self.config.student.model_name or "").lower()
         return teacher_backend == "mock" or student_name.startswith("mock-")
 
-    def _mock_generate_for_sample(self, sample: VlmSample) -> dict[str, Any]:
+    def _mock_generate_for_sample(self, sample: VlmSample, *, base_row: dict[str, Any] | None = None) -> dict[str, Any]:
         field = self.config.distillation.switch_logits_field
         prompt = format_prompt(
             self.config.distillation.prompt_template,
@@ -293,8 +301,12 @@ class VisualSwitchDistiller:
             target_type=sample.target_type,
             task=sample.task,
         )
-        prompt_len = max(1, len(prompt.split()))
-        seq_len = max(2, min(6, prompt_len // 2))
+        text_prompt_len = max(1, len(prompt.split()))
+        visual_token_count = int((base_row or {}).get("visual_token_count") or 0)
+        prompt_len = text_prompt_len + visual_token_count
+        teacher_tokens = _extract_teacher_tokens(base_row or {})
+        answer_len = len(teacher_tokens) if teacher_tokens else max(2, min(6, text_prompt_len // 2))
+        seq_len = prompt_len + answer_len
         vocab_size = 32
         base_k = int(self.config.distillation.dbild_top_k)
         max_k = min(vocab_size, max(2, min(base_k, 8)))
@@ -332,6 +344,7 @@ class VisualSwitchDistiller:
             f"{field}_prompt_len": int(prompt_len),
             f"{field}_vocab_size": vocab_size,
             f"{field}_temperature": float(self.config.distillation.kd_temperature),
+            "teacher_tokens": teacher_tokens,
         }
 
     def _components(self) -> VSDComponents:
@@ -501,8 +514,22 @@ class VisualSwitchDistiller:
             return None
         return int(token_id)
 
-    def _generate_for_sample_from_projected_visual(self, *, sample: VlmSample, prompt: str, projected_visual):
-        teacher_inputs = self._teacher_text_inputs(prompt)
+    def _generate_for_sample_from_projected_visual(
+        self,
+        *,
+        sample: VlmSample,
+        prompt: str,
+        projected_visual,
+        base_row: dict[str, Any] | None = None,
+    ):
+        teacher_answer = str((base_row or {}).get("teacher_answer") or "").strip()
+        full_text = _join_prompt_and_answer(prompt, teacher_answer)
+        prompt_teacher_inputs = self._teacher_text_inputs(prompt)
+        prompt_embeds, _ = self._splice_visual_embeds(
+            teacher_inputs=prompt_teacher_inputs,
+            projected_visual=projected_visual,
+        )
+        teacher_inputs = self._teacher_text_inputs(full_text)
         switched_embeds, attention_mask = self._splice_visual_embeds(
             teacher_inputs=teacher_inputs,
             projected_visual=projected_visual,
@@ -511,6 +538,10 @@ class VisualSwitchDistiller:
             inputs_embeds=switched_embeds,
             attention_mask=attention_mask,
         )
+        prompt_len = int(prompt_embeds.shape[1])
+        teacher_tokens = _extract_teacher_tokens(base_row or {})
+        if teacher_tokens:
+            prompt_len = int(switch_logits.shape[1]) - len(teacher_tokens)
         cached_logits = _compact_adaptive_sequence_logits(
             switch_logits,
             base_k=int(self.config.distillation.dbild_top_k),
@@ -521,9 +552,10 @@ class VisualSwitchDistiller:
         return {
             field: cached_logits,
             f"{field}_format": "switch_kd",
-            f"{field}_prompt_len": int(teacher_inputs["input_ids"].shape[1]),
+            f"{field}_prompt_len": int(prompt_len),
             f"{field}_vocab_size": int(switch_logits.shape[-1]),
             f"{field}_temperature": float(self.config.distillation.kd_temperature),
+            "teacher_tokens": teacher_tokens,
         }
 
 def create_visual_switch_dataset(config: PipelineConfig) -> Path:
@@ -533,13 +565,19 @@ def create_visual_switch_dataset(config: PipelineConfig) -> Path:
         max_samples=config.data.max_samples,
     )
     output_path = resolve_switch_logits_path(config.data)
-    completed_ids = _load_completed_ids(output_path)
+    completed = _load_completed_ids(output_path, field_name=config.distillation.switch_logits_field)
+    if completed["invalid_count"]:
+        _rewrite_valid_completed_rows(output_path, field_name=config.distillation.switch_logits_field)
+    completed_ids = completed["ids"]
     total = len(samples)
     pending_samples = [sample for sample in samples if sample.id not in completed_ids]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     print(
         f"Switch logits samples: total={total}, completed={len(completed_ids)}, "
+        f"completed_valid_count={completed['valid_count']}, "
+        f"completed_invalid_count={completed['invalid_count']}, "
+        f"first_invalid_row_keys={completed['first_invalid_keys']}, "
         f"pending={len(pending_samples)}, output={output_path}"
     )
 
@@ -584,11 +622,26 @@ def create_visual_switch_dataset(config: PipelineConfig) -> Path:
         for sample in pending_samples:
             started = time.perf_counter()
             row = dict(rows_by_id.get(sample.id, asdict(sample)))
+            if not str(row.get("teacher_answer") or "").strip():
+                raise ValueError(
+                    "Switch logits generation requires teacher_answer so the full "
+                    f"prompt-plus-answer sequence can be cached. id={sample.id}, image={sample.image}, "
+                    f"row_keys={sorted(row.keys())}"
+                )
             if use_student_visual_cache and not distiller._is_mock_mode():
                 cache_path = _student_visual_cache_path(cache_dir, sample)
-                row.update(distiller.generate_for_sample_from_visual_cache(sample, cache_path))
+                row.update(distiller.generate_for_sample_from_visual_cache(sample, cache_path, base_row=row))
             else:
-                row.update(distiller.generate_for_sample(sample))
+                row.update(distiller.generate_for_sample(sample, base_row=row))
+            if "teacher_tokens" not in row:
+                row["teacher_tokens"] = _extract_teacher_tokens(row)
+            _validate_switch_logits_row(
+                row,
+                field_name=config.distillation.switch_logits_field,
+                visual_token_placeholder=config.distillation.visual_token_placeholder,
+            )
+            if completed_now == 0:
+                _print_first_switch_logits_debug(row, field_name=config.distillation.switch_logits_field)
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
             handle.flush()
             completed_now += 1
@@ -604,16 +657,145 @@ def create_visual_switch_dataset(config: PipelineConfig) -> Path:
     return output_path
 
 
-def _load_completed_ids(path: Path) -> set[str]:
+def _load_completed_ids(path: Path, *, field_name: str) -> dict[str, Any]:
     if not path.exists():
-        return set()
+        return {"ids": set(), "valid_count": 0, "invalid_count": 0, "first_invalid_keys": None}
 
     completed_ids: set[str] = set()
+    valid_count = 0
+    invalid_count = 0
+    first_invalid_keys: list[str] | None = None
     for row in read_jsonl(path):
         sample_id = row.get("id")
-        if sample_id is not None:
-            completed_ids.add(str(sample_id))
-    return completed_ids
+        if sample_id is None:
+            continue
+        if not _is_valid_switch_logits_row(row, field_name=field_name):
+            invalid_count += 1
+            if first_invalid_keys is None:
+                first_invalid_keys = sorted(str(key) for key in row.keys())
+            continue
+        completed_ids.add(str(sample_id))
+        valid_count += 1
+    return {
+        "ids": completed_ids,
+        "valid_count": valid_count,
+        "invalid_count": invalid_count,
+        "first_invalid_keys": first_invalid_keys,
+    }
+
+
+def _rewrite_valid_completed_rows(path: Path, *, field_name: str) -> None:
+    valid_rows = [row for row in read_jsonl(path) if _is_valid_switch_logits_row(row, field_name=field_name)]
+    with path.open("w", encoding="utf-8") as handle:
+        for row in valid_rows:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    print(
+        f"[switch-logits] pruned invalid existing rows from {path}; "
+        f"remaining_valid_rows={len(valid_rows)}"
+    )
+
+
+def _extract_teacher_tokens(row: dict[str, Any]) -> list[int]:
+    tokens = row.get("teacher_tokens")
+    if isinstance(tokens, list) and (not tokens or not isinstance(tokens[0], list)):
+        return [int(value) for value in tokens]
+    if isinstance(tokens, list) and tokens and isinstance(tokens[0], list):
+        return [int(value) for value in tokens[0]]
+    generated = row.get("teacher_generated_ids")
+    if isinstance(generated, list) and generated and isinstance(generated[0], list):
+        return [int(value) for value in generated[0]]
+    if isinstance(generated, list):
+        return [int(value) for value in generated]
+    return []
+
+
+def _join_prompt_and_answer(prompt: str, answer: str) -> str:
+    if not answer:
+        return prompt
+    separator = "" if prompt.endswith((" ", "\n")) else " "
+    return f"{prompt}{separator}{answer}".strip()
+
+
+def _validate_switch_logits_row(
+    row: dict[str, Any],
+    *,
+    field_name: str,
+    visual_token_placeholder: str,
+) -> None:
+    payload = row.get(field_name)
+    if not _is_valid_logits_payload(payload):
+        raise ValueError(
+            "Switch logits output row is missing a valid logits payload. "
+            f"id={row.get('id')}, image={row.get('image')}, row_keys={sorted(row.keys())}"
+        )
+    shape = payload.get("shape")
+    raw_seq_len = int(shape[1])
+    prompt_len = int(row.get(f"{field_name}_prompt_len", -1))
+    teacher_tokens = _extract_teacher_tokens(row)
+    answer_len = len(teacher_tokens)
+    effective_len = raw_seq_len - prompt_len
+    difference = effective_len - answer_len
+    if answer_len > 0 and difference != 0:
+        raise ValueError(
+            "Switch logits prompt_len alignment is invalid. "
+            f"id={row.get('id')}, image={row.get('image')}, raw_seq_len={raw_seq_len}, "
+            f"switch_logits_prompt_len={prompt_len}, teacher_tokens_len={answer_len}, "
+            f"effective_len={effective_len}, difference={difference}, "
+            f"visual_token_placeholder={visual_token_placeholder}, switch_logits_shape={shape}"
+        )
+
+
+def _is_valid_switch_logits_row(row: dict[str, Any], *, field_name: str) -> bool:
+    if not _is_valid_logits_payload(row.get(field_name)):
+        return False
+    teacher_tokens = _extract_teacher_tokens(row)
+    if not teacher_tokens:
+        return True
+    payload = row[field_name]
+    try:
+        raw_seq_len = int(payload["shape"][1])
+        prompt_len = int(row.get(f"{field_name}_prompt_len", -1))
+    except (TypeError, ValueError, KeyError, IndexError):
+        return False
+    return raw_seq_len - prompt_len == len(teacher_tokens)
+
+
+def _print_first_switch_logits_debug(row: dict[str, Any], *, field_name: str) -> None:
+    payload = row[field_name]
+    shape = payload["shape"]
+    prompt_len = int(row.get(f"{field_name}_prompt_len", 0))
+    teacher_tokens = _extract_teacher_tokens(row)
+    effective_len = int(shape[1]) - prompt_len
+    top_k_first_token = None
+    token_k = payload.get("token_k")
+    if isinstance(token_k, list) and token_k and isinstance(token_k[0], list) and token_k[0]:
+        top_k_first_token = token_k[0][0]
+    print("Switch logits first sample debug:")
+    print(f"  raw_seq_len: {shape[1]}")
+    print(f"  switch_logits_prompt_len: {prompt_len}")
+    print(f"  teacher_tokens_len: {len(teacher_tokens)}")
+    print(f"  raw_seq_len_minus_prompt_len: {effective_len}")
+    print(f"  vocab_size: {payload.get('vocab_size')}")
+    print(f"  top_k_first_token: {top_k_first_token}")
+    print(f"  alignment_validation_passed: {effective_len == len(teacher_tokens) if teacher_tokens else True}")
+
+
+def _is_valid_logits_payload(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if not all(key in payload for key in ("indices", "values", "vocab_size", "shape")):
+        return False
+    return _nested_shape(payload.get("indices")) == _nested_shape(payload.get("values")) != ()
+
+
+def _nested_shape(value: Any) -> tuple[int, ...]:
+    if not isinstance(value, list) or not value:
+        return ()
+    first_shape = _nested_shape(value[0])
+    for item in value[1:]:
+        if _nested_shape(item) != first_shape:
+            return ()
+    return (len(value), *first_shape)
 
 
 def _load_switch_base_rows(config: PipelineConfig) -> list[dict[str, Any]]:

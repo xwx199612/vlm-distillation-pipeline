@@ -97,6 +97,8 @@ class VocabAlignment:
 def train_student(config: PipelineConfig) -> Path:
     rows = _load_training_rows(config)
     _print_training_row_summary(config, rows)
+    if config.distillation.method == "switch_kd":
+        _validate_switch_kd_training_rows(config, rows)
     config.student.output_dir.mkdir(parents=True, exist_ok=True)
     config.student.adapter_dir.mkdir(parents=True, exist_ok=True)
 
@@ -212,7 +214,6 @@ def _train_hf_student(config: PipelineConfig, rows: list[dict]) -> Path:
     }
     if config.distillation.method == "switch_kd":
         trainer_cls = _build_switch_kd_trainer()
-        _warn_if_switch_logits_missing(config, rows)
         trainer_kwargs["switch_kd_config"] = config
     trainer = trainer_cls(**trainer_kwargs)
     trainer.train()
@@ -481,6 +482,11 @@ def _prepare_reference_logits(
                         )
                         warning_bucket.add(key)
                     return None
+                raise ValueError(
+                    f"Cannot use {label} KD because cached vocab_size={reference_vocab} "
+                    f"does not match student vocab_size={student_vocab_size} and "
+                    "skip_kd_on_vocab_mismatch=false."
+                )
             else:
                 key = f"{label}:{reference_vocab}->{student_vocab_size}:remapped"
                 if key not in warning_bucket:
@@ -544,6 +550,11 @@ def _prepare_reference_logits(
                     )
                     warning_bucket.add(key)
                 return None
+            raise ValueError(
+                f"Cannot use {label} KD because cached vocab_size={reference_vocab} "
+                f"does not match student vocab_size={student_vocab_size} and "
+                "skip_kd_on_vocab_mismatch=false."
+            )
         else:
             key = f"{label}:{reference_vocab}->{student_vocab_size}:remapped"
             if key not in warning_bucket:
@@ -756,6 +767,98 @@ def _warn_if_switch_logits_missing(config: PipelineConfig, rows: list[dict]) -> 
         )
 
 
+def _validate_switch_kd_training_rows(config: PipelineConfig, rows: list[dict]) -> None:
+    teacher_field = config.distillation.teacher_logits_field
+    switch_field = config.distillation.switch_logits_field
+    rows_with_teacher_answer = sum(1 for row in rows if row.get("teacher_answer") is not None)
+    rows_with_teacher_logits = sum(1 for row in rows if row.get(teacher_field) is not None)
+    rows_with_switch_logits = sum(1 for row in rows if row.get(switch_field) is not None)
+
+    if rows_with_teacher_answer <= 0:
+        raise RuntimeError("Switch-KD method selected but rows_with_teacher_answer=0.")
+    if rows_with_teacher_logits <= 0:
+        raise RuntimeError(f"Switch-KD method selected but rows_with_{teacher_field}=0.")
+    if rows_with_switch_logits <= 0:
+        raise RuntimeError(f"Switch-KD method selected but rows_with_{switch_field}=0.")
+
+    _warn_if_switch_logits_missing(config, rows)
+
+    for row in rows:
+        _validate_cached_logits_alignment(
+            row,
+            field_name=teacher_field,
+            align_to_answer=config.distillation.align_kd_logits_to_answer,
+            label="teacher_logits",
+        )
+        _validate_cached_logits_alignment(
+            row,
+            field_name=switch_field,
+            align_to_answer=config.distillation.align_kd_logits_to_answer,
+            label="switch_logits",
+        )
+
+
+def _validate_cached_logits_alignment(
+    row: dict[str, Any],
+    *,
+    field_name: str,
+    align_to_answer: bool,
+    label: str,
+) -> None:
+    payload = row.get(field_name)
+    if payload is None:
+        return
+    raw_seq_len = _cached_logits_seq_len(payload)
+    if raw_seq_len is None:
+        return
+    prompt_len_value = row.get(f"{field_name}_prompt_len")
+    prompt_len = int(prompt_len_value) if prompt_len_value is not None else 0
+    effective_prompt_len = _normalize_reference_prompt_len(prompt_len, raw_seq_len) or 0
+    effective_len = raw_seq_len - effective_prompt_len
+    teacher_tokens_len = len(_extract_teacher_tokens(row))
+    answer_label_token_count = teacher_tokens_len or None
+    print(
+        f"[train][{label}] id={row.get('id')} raw_logits_seq_len={raw_seq_len} "
+        f"prompt_len={prompt_len} effective_logits_seq_len={effective_len} "
+        f"teacher_tokens_len={teacher_tokens_len} answer_label_token_count={answer_label_token_count}"
+    )
+    if align_to_answer and teacher_tokens_len > 0 and effective_len != teacher_tokens_len:
+        raise ValueError(
+            f"{label} prompt_len alignment is invalid for id={row.get('id')}: "
+            f"raw_logits_seq_len={raw_seq_len}, prompt_len={prompt_len}, "
+            f"effective_logits_seq_len={effective_len}, teacher_tokens_len={teacher_tokens_len}, "
+            f"difference={effective_len - teacher_tokens_len}."
+        )
+
+
+def _cached_logits_seq_len(payload: Any) -> int | None:
+    if isinstance(payload, dict):
+        shape = payload.get("shape")
+        if isinstance(shape, list | tuple) and len(shape) >= 2:
+            return int(shape[1])
+        indices = payload.get("indices")
+        if isinstance(indices, list) and indices and isinstance(indices[0], list):
+            return len(indices[0])
+        return None
+    if isinstance(payload, list) and payload and isinstance(payload[0], list):
+        return len(payload[0])
+    return None
+
+
+def _extract_teacher_tokens(row: dict[str, Any]) -> list[int]:
+    tokens = row.get("teacher_tokens")
+    if isinstance(tokens, list) and (not tokens or not isinstance(tokens[0], list)):
+        return [int(value) for value in tokens]
+    if isinstance(tokens, list) and tokens and isinstance(tokens[0], list):
+        return [int(value) for value in tokens[0]]
+    generated = row.get("teacher_generated_ids")
+    if isinstance(generated, list) and generated and isinstance(generated[0], list):
+        return [int(value) for value in generated[0]]
+    if isinstance(generated, list):
+        return [int(value) for value in generated]
+    return []
+
+
 def _load_training_rows(config: PipelineConfig) -> list[dict[str, Any]]:
     paths = _training_data_paths(config)
     existing_paths = [path for path in paths if path.exists()]
@@ -801,7 +904,21 @@ def _print_training_row_summary(config: PipelineConfig, rows: list[dict[str, Any
         }
     )
 
+    paths = _training_data_paths(config)
     print("Student training data summary:")
+    for path in paths:
+        exists = path.exists()
+        path_rows = read_jsonl(path) if exists else []
+        first_keys = sorted(path_rows[0].keys()) if path_rows else None
+        label = "label_path"
+        if path == resolve_teacher_logits_path(config.data):
+            label = "teacher_logits_path"
+        if path == resolve_switch_logits_path(config.data):
+            label = "switch_logits_path"
+        print(
+            f"  {label}: {path} exists={exists} row_count={len(path_rows)} "
+            f"first_row_keys={first_keys}"
+        )
     print(f"  total rows: {len(rows)}")
     print(f"  rows with teacher_answer: {teacher_answer_rows}")
     print(f"  rows with {teacher_field}: {teacher_logits_rows}")

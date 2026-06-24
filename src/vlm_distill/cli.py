@@ -4,8 +4,9 @@ import argparse
 from pathlib import Path
 
 from .config_schema import load_config, resolve_label_path, resolve_prediction_path
-from .data_manifest import summarize_label_rows, validate_manifest
+from .data_manifest import validate_manifest
 from .hf_runtime import configure_hf_offline_mode
+from .label_validation import build_teacher_token_decoder, validate_label_rows
 from .manifest_builder import create_manifest_from_config, infer_manifest_task_from_config_path
 from .stage_evaluation import evaluate
 from .stage_answer_labeling import create_distillation_dataset
@@ -65,17 +66,27 @@ def main() -> None:
         return
 
     if args.command == "validate-labels":
-        summary = summarize_label_rows(
+        decoder = build_teacher_token_decoder(config)
+        summary = validate_label_rows(
             resolve_label_path(config.data),
             max_samples=config.data.max_samples,
+            decode_tokens=decoder,
         )
         print(
             "OK validated labels "
             f"path={resolve_label_path(config.data)} "
             f"total_rows={summary['total_rows']} "
-            f"teacher_answer_rows={summary['teacher_answer_rows']} "
-            f"non_empty_teacher_answer_rows={summary['non_empty_teacher_answer_rows']}"
+            f"valid_json_rows={summary['valid_json_rows']} "
+            f"schema_valid_rows={summary['schema_valid_rows']} "
+            f"string_list_rows={summary['string_list_rows']} "
+            f"answer_token_mismatch_rows={summary['answer_token_mismatch_rows']}"
         )
+        if decoder is None:
+            print("teacher_tokens decode check skipped: teacher tokenizer unavailable")
+        if summary["bad_rows"]:
+            print("first_bad_rows:")
+            for bad_row in summary["bad_rows"]:
+                print(f"  id={bad_row['id']} reason={bad_row['reason']}")
         return
 
     if args.command == "label":
