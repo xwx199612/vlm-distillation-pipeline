@@ -186,7 +186,13 @@ def _train_hf_student(config: PipelineConfig, rows: list[dict]) -> Path:
         model = get_peft_model(model, lora_config)
 
     train_dataset = VlmTrainingDataset(rows, config, processor)
-    data_collator = build_vlm_data_collator(processor)
+    data_collator = build_vlm_data_collator(
+        processor,
+        logits_fields=(
+            config.distillation.teacher_logits_field,
+            config.distillation.switch_logits_field,
+        ),
+    )
     args = TrainingArguments(
         output_dir=str(config.student.output_dir),
         per_device_train_batch_size=config.training.batch_size,
