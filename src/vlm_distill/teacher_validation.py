@@ -429,7 +429,11 @@ def _validate_teacher_answer_schema(parsed: dict[str, Any]) -> tuple[bool, str |
         if not isinstance(element.get("type"), str):
             return False, f"teacher_answer.elements[{index}].type is not a string", string_list_row
         if element["type"] not in ALLOWED_ELEMENT_TYPES:
-            return False, f"teacher_answer.elements[{index}].type is invalid", string_list_row
+            ##return False, f"teacher_answer.elements[{index}].type is invalid", string_list_row
+            return False, (
+            f"teacher_answer.elements[{index}].type is invalid: "
+            f"{element.get('type')!r}"
+            )，string_list_row
         if not isinstance(element.get("focused"), bool):
             return False, f"teacher_answer.elements[{index}].focused is not a boolean", string_list_row
     return True, None, string_list_row
