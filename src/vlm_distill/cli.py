@@ -6,7 +6,6 @@ from pathlib import Path
 from .config_schema import load_config, resolve_label_path, resolve_prediction_path
 from .data_manifest import validate_manifest
 from .hf_runtime import configure_hf_offline_mode
-from .label_validation import build_teacher_token_decoder, validate_label_rows
 from .manifest_builder import create_manifest_from_config, infer_manifest_task_from_config_path
 from .stage_evaluation import evaluate
 from .stage_prediction_evaluation import evaluate_predictions
@@ -14,6 +13,7 @@ from .stage_student_prediction import create_student_predictions
 from .stage_teacher_precompute import create_teacher_precompute_dataset
 from .stage_student_training import train_student
 from .stage_visual_switch_logits import create_visual_switch_dataset
+from .teacher_validation import build_teacher_token_decoder, validate_teacher_output_file
 
 
 def main() -> None:
@@ -38,10 +38,14 @@ def main() -> None:
     ):
         command_parser = subparsers.add_parser(command)
         command_parser.add_argument("--config", type=Path, required=True)
-    validate_labels_parser = subparsers.add_parser("validate-labels")
+    validate_teacher_parser = subparsers.add_parser("validate-teacher")
+    validate_teacher_parser.add_argument("--config", type=Path, required=True)
+
+    validate_labels_parser = subparsers.add_parser(
+        "validate-labels",
+        help=argparse.SUPPRESS,
+    )
     validate_labels_parser.add_argument("--config", type=Path, required=True)
-    validate_labels_parser.add_argument("--require-logits", action="store_true")
-    validate_labels_parser.add_argument("--no-require-logits", action="store_true")
     args = parser.parse_args()
 
     if args.command == "create-manifest":
@@ -67,36 +71,38 @@ def main() -> None:
         print(f"OK validated manifest samples={len(samples)} path={config.data.manifest_path}")
         return
 
-    if args.command == "validate-labels":
+    if args.command == "validate-teacher":
         decoder = build_teacher_token_decoder(config)
         require_logits = bool(config.distillation.teacher_logits)
-        if args.require_logits:
-            require_logits = True
-        if args.no_require_logits:
-            require_logits = False
-        summary = validate_label_rows(
+        if decoder is None:
+            raise RuntimeError(
+                "Teacher tokenizer unavailable; cannot validate teacher_tokens."
+            )
+        summary = validate_teacher_output_file(
             resolve_label_path(config.data),
             max_samples=config.data.max_samples,
             decode_tokens=decoder,
-            require_logits=require_logits,
+            require_teacher_logits=require_logits,
         )
-        print(f"OK validated labels path={resolve_label_path(config.data)} require_logits={require_logits}")
-        print(f"total rows: {summary['total_rows']}")
-        print(f"valid teacher_answer rows: {summary['valid_teacher_answer_rows']}")
-        print(f"schema-valid rows: {summary['schema_valid_rows']}")
-        print(f"string-list rows: {summary['string_list_rows']}")
-        print(f"answer/token mismatch rows: {summary['answer_token_mismatch_rows']}")
-        print(f"rows with valid teacher_logits: {summary['valid_teacher_logits_rows']}")
-        print(f"answer/logits length mismatch rows: {summary['answer_logits_length_mismatch_rows']}")
-        if decoder is None:
-            print("teacher_tokens decode check skipped: teacher tokenizer unavailable")
-        if summary["bad_rows"]:
-            print("first_bad_rows:")
-            for bad_row in summary["bad_rows"]:
-                print(f"  id={bad_row['id']} reason={bad_row['reason']}")
+        _print_teacher_validation_summary(summary)
+        if summary["invalid_rows"]:
+            raise SystemExit(1)
         return
 
-    if args.command in {"label", "teacher-precompute"}:
+    if args.command == "validate-labels":
+        raise SystemExit("validate-labels is deprecated. Use validate-teacher.")
+
+    if args.command == "label":
+        samples = validate_manifest(
+            config.data.manifest_path,
+            image_root=config.data.image_root,
+            max_samples=config.data.max_samples,
+        )
+        output_path = create_teacher_precompute_dataset(config, samples)
+        print(f"OK teacher precompute dataset written: {output_path}")
+        return
+
+    if args.command == "teacher-precompute":
         samples = validate_manifest(
             config.data.manifest_path,
             image_root=config.data.image_root,
@@ -141,6 +147,28 @@ def main() -> None:
         return
 
     raise ValueError(f"Unknown command: {args.command}")
+
+
+def _print_teacher_validation_summary(summary: dict[str, object]) -> None:
+    print(f"OK validated teacher output path={summary['path']}")
+    print(f"total_rows={summary['total_rows']}")
+    print(f"valid_json_rows={summary['valid_json_rows']}")
+    print(f"schema_valid_rows={summary['schema_valid_rows']}")
+    print(f"string_list_rows={summary['string_list_rows']}")
+    print(f"answer_token_match_rows={summary['answer_token_match_rows']}")
+    print(f"answer_token_mismatch_rows={summary['answer_token_mismatch_rows']}")
+    print(f"rows_with_teacher_logits={summary['rows_with_teacher_logits']}")
+    print(f"valid_teacher_logits_rows={summary['valid_teacher_logits_rows']}")
+    print(f"logits_length_match_rows={summary['logits_length_match_rows']}")
+    print(f"logits_length_mismatch_rows={summary['logits_length_mismatch_rows']}")
+    print(f"full_sequence_logits_rows={summary['full_sequence_logits_rows']}")
+    print(f"vocab_mismatch_rows={summary['vocab_mismatch_rows']}")
+    print(f"invalid_rows={summary['invalid_rows']}")
+    bad_rows = summary.get("bad_rows") or []
+    if bad_rows:
+        print("first_bad_rows:")
+        for bad_row in bad_rows:
+            print(f"  id={bad_row['id']} reason={bad_row['reason']}")
 
 
 if __name__ == "__main__":

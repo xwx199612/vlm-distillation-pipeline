@@ -133,22 +133,27 @@ vlm-distill validate-manifest \
 
 ---
 
-## Validate Labels
+## Validate Teacher
 
 ```powershell
-vlm-distill validate-labels \
+vlm-distill validate-teacher \
   --config configs/parsing_response_distillation.yaml
 ```
 
 This reads the canonical teacher output at `data.label_path` and reports:
 
 - `total_rows`
-- `valid teacher_answer rows`
-- `schema-valid rows`
-- `string-list rows`
-- `answer/token mismatch rows`
-- `rows with valid teacher_logits` when `distillation.teacher_logits: true`
-- `answer/logits length mismatch rows`
+- `valid_json_rows`
+- `schema_valid_rows`
+- `string_list_rows`
+- `answer_token_match_rows`
+- `answer_token_mismatch_rows`
+- `rows_with_teacher_logits` when `distillation.teacher_logits: true`
+- `valid_teacher_logits_rows`
+- `logits_length_match_rows`
+- `logits_length_mismatch_rows`
+- `full_sequence_logits_rows`
+- `vocab_mismatch_rows`
 
 ---
 
@@ -333,7 +338,7 @@ Expected teacher response:
 Validate generated labels:
 
 ```powershell
-vlm-distill validate-labels \
+  vlm-distill validate-teacher \
   --config configs/parsing_labeling.yaml
 ```
 
@@ -424,7 +429,7 @@ D:\TV_data\teacher_parsing\grounding_teacher_labels.jsonl
 Validate generated labels:
 
 ```powershell
-vlm-distill validate-labels \
+  vlm-distill validate-teacher \
   --config configs/grounding_test.yaml
 ```
 
@@ -562,7 +567,7 @@ Validate the response distillation inputs:
 ```powershell
 vlm-distill validate-manifest --config configs/parsing_response_distillation.yaml
 
-vlm-distill validate-labels --config configs/parsing_response_distillation.yaml
+vlm-distill validate-teacher --config configs/parsing_response_distillation.yaml
 ```
 
 ## Step 6
@@ -707,21 +712,22 @@ Notes for Qwen2.5-VL:
 Switch-KD training pipeline:
 
 ```bash
-python -m vlm_distill.cli label --config configs/parsing_switch_kd.yaml
-python -m vlm_distill.cli validate-labels --config configs/parsing_switch_kd.yaml
+python -m vlm_distill.cli teacher-precompute --config configs/parsing_switch_kd.yaml
+python -m vlm_distill.cli validate-teacher --config configs/parsing_switch_kd.yaml
 python -m vlm_distill.cli switch-logits --config configs/parsing_switch_kd.yaml
 python -m vlm_distill.cli train --config configs/parsing_switch_kd.yaml
 ```
 
-For Switch-KD, use `label` or `teacher-precompute`, followed by `switch-logits`
-and `train`. `distillation.teacher_logits: true` means teacher logits are
-generated during `label`/`teacher-precompute` into `data.label_path`, the
+For Switch-KD, use `teacher-precompute`, followed by `validate-teacher`,
+`switch-logits`, and `train`. `distillation.teacher_logits: true` means teacher
+logits are generated during `teacher-precompute` into `data.label_path`, the
 canonical unified teacher output.
 
 4-GPU precompute:
 
 ```bash
-bash scripts/run_parallel_switch_kd_precompute_4gpu.sh --clean-outputs label
+bash scripts/run_parallel_switch_kd_precompute_4gpu.sh --clean-outputs teacher-precompute
+python -m vlm_distill.cli validate-teacher --config configs/parsing_switch_kd.yaml
 bash scripts/run_parallel_switch_kd_precompute_4gpu.sh --clean-outputs switch-logits
 ```
 
@@ -731,7 +737,7 @@ Or:
 bash scripts/run_parallel_switch_kd_precompute_4gpu.sh --clean-outputs all
 ```
 
-Here `all` means `label` then `switch-logits`.
+Here `all` means `teacher-precompute` then `switch-logits`.
 
 Training objective:
 

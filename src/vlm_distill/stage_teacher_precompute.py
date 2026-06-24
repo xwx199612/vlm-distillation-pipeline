@@ -1632,8 +1632,8 @@ def _join_prompt_and_answer(prompt: str, answer: str) -> str:
 
 
 def _assert_teacher_logits_answer_length(row: dict[str, Any], field_name: str) -> None:
-    from .label_validation import validate_teacher_row
-    valid, reason = validate_teacher_row(row, require_logits=True, logits_field=field_name)
+    from .teacher_validation import validate_teacher_row
+    valid, reason = validate_teacher_row(row, require_teacher_logits=True, logits_field=field_name)
     if not valid:
         raise ValueError(f"Unified teacher row failed validation id={row.get('id')}: {reason}")
 
@@ -1644,7 +1644,7 @@ def _load_completed_teacher_rows(
     config: PipelineConfig,
     require_logits: bool,
 ) -> CompletedLogitsRows:
-    from .label_validation import build_teacher_token_decoder, validate_teacher_row
+    from .teacher_validation import build_teacher_token_decoder, validate_teacher_row
     if not path.exists():
         return CompletedLogitsRows(ids=set(), valid_count=0, invalid_count=0, first_invalid_keys=None)
     completed_ids: set[str] = set()
@@ -1656,7 +1656,11 @@ def _load_completed_teacher_rows(
         sample_id = row.get("id")
         if sample_id is None:
             continue
-        valid, reason = validate_teacher_row(row, require_logits=require_logits, decode_tokens=decoder)
+        valid, reason = validate_teacher_row(
+            row,
+            require_teacher_logits=require_logits,
+            decode_tokens=decoder,
+        )
         if valid:
             completed_ids.add(str(sample_id))
             valid_count += 1
@@ -1673,11 +1677,15 @@ def _load_completed_teacher_rows(
 
 
 def _rewrite_valid_teacher_rows(path: Path, *, config: PipelineConfig, require_logits: bool) -> None:
-    from .label_validation import build_teacher_token_decoder, validate_teacher_row
+    from .teacher_validation import build_teacher_token_decoder, validate_teacher_row
     decoder = build_teacher_token_decoder(config)
     valid_rows = [
         row for row in read_jsonl(path)
-        if validate_teacher_row(row, require_logits=require_logits, decode_tokens=decoder)[0]
+        if validate_teacher_row(
+            row,
+            require_teacher_logits=require_logits,
+            decode_tokens=decoder,
+        )[0]
     ]
     with path.open("w", encoding="utf-8") as handle:
         for row in valid_rows:

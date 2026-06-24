@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from vlm_distill.data_manifest import VlmSample
-from vlm_distill.label_validation import validate_label_rows
+from vlm_distill.teacher_validation import validate_teacher_output_file
 from vlm_distill.stage_answer_labeling import (
     _label_sample,
     _normalize_teacher_answer,
@@ -92,7 +92,7 @@ def test_teacher_tokens_are_recomputed_after_normalization():
     assert row["teacher_tokens"] != [999]
 
 
-def test_validate_label_rows_checks_decoded_tokens_against_final_answer(tmp_path: Path):
+def test_validate_teacher_output_file_checks_decoded_tokens_against_final_answer(tmp_path: Path):
     answer = _normalize_teacher_answer(
         _sample(),
         '{"elements":[{"text":"Search","type":"tab","focused":false}]}',
@@ -102,6 +102,8 @@ def test_validate_label_rows_checks_decoded_tokens_against_final_answer(tmp_path
         json.dumps(
             {
                 "id": "screen-1",
+                "image": "screen.jpg",
+                "query": "List all visible UI elements.",
                 "teacher_answer": answer,
                 "teacher_tokens": [ord(char) for char in answer],
             }
@@ -110,7 +112,7 @@ def test_validate_label_rows_checks_decoded_tokens_against_final_answer(tmp_path
         encoding="utf-8",
     )
 
-    summary = validate_label_rows(
+    summary = validate_teacher_output_file(
         label_path,
         decode_tokens=lambda tokens: "".join(chr(token) for token in tokens),
     )
@@ -120,7 +122,7 @@ def test_validate_label_rows_checks_decoded_tokens_against_final_answer(tmp_path
     assert summary["answer_token_mismatch_rows"] == 0
 
 
-def test_validate_label_rows_ignores_im_end_in_decode_comparison(tmp_path: Path):
+def test_validate_teacher_output_file_ignores_im_end_in_decode_comparison(tmp_path: Path):
     answer = _normalize_teacher_answer(
         _sample(),
         '{"elements":[{"text":"Home","type":"tab","focused":true}]}',
@@ -130,6 +132,8 @@ def test_validate_label_rows_ignores_im_end_in_decode_comparison(tmp_path: Path)
         json.dumps(
             {
                 "id": "screen-1",
+                "image": "screen.jpg",
+                "query": "List all visible UI elements.",
                 "teacher_answer": answer,
                 "teacher_tokens": [1, 2, 3],
             }
@@ -138,7 +142,7 @@ def test_validate_label_rows_ignores_im_end_in_decode_comparison(tmp_path: Path)
         encoding="utf-8",
     )
 
-    summary = validate_label_rows(
+    summary = validate_teacher_output_file(
         label_path,
         decode_tokens=lambda _tokens: answer + "<|im_end|>",
     )
