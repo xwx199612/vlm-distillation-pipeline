@@ -938,8 +938,7 @@ def _normalize_screen_element_type(value: object) -> str:
     if not cleaned:
         return "unknown"
 
-    lowered = cleaned.lower()
-    snake = re.sub(r"[^a-z0-9]+", "_", lowered).strip("_")
+    snake = re.sub(r"[^a-z0-9]+", "_", cleaned.lower()).strip("_")
     snake = re.sub(r"_+", "_", snake)
     if not snake:
         return "unknown"
@@ -951,7 +950,7 @@ def _normalize_screen_element_type(value: object) -> str:
     tokens = [token for token in snake.split("_") if token]
     token_set = set(tokens)
 
-    if "app" in token_set or "application" in token_set:
+    if token_set & {"app", "application"}:
         return "app_icon"
     if token_set & {"tile", "card", "carousel", "recommend", "movie", "content", "poster", "banner"}:
         return "tile"
@@ -959,9 +958,8 @@ def _normalize_screen_element_type(value: object) -> str:
         return "menu_item"
     if token_set & {"nav", "navigation"}:
         return "tab"
-    if token_set & {"search", "box", "bar", "input", "text"}:
-        if token_set & {"search", "bar", "box", "input", "text"}:
-            return "input"
+    if token_set & {"search", "search_box", "searchbar", "search_bar", "input", "text_box", "textbox", "text"}:
+        return "input"
     if token_set & {"toggle", "switch"}:
         return "toggle"
     if token_set & {"icon", "setting", "settings"}:
