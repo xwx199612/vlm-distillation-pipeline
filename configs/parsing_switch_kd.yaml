@@ -138,7 +138,7 @@ distillation:
   visual_token_placeholder: "<|image_pad|>"
   max_cached_logits_vocab: 4096
   align_kd_logits_to_answer: true
-  skip_kd_on_vocab_mismatch: true
+  skip_kd_on_vocab_mismatch: false
 
 evaluation:
   output_path: outputs/switch-kd/{task_name}_switch_kd_{response_profile}/eval_report.json
