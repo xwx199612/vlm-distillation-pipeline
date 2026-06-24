@@ -27,6 +27,11 @@ class SwitchKDLoss:
         vsd_weight: float = 0.5,
         temperature: float = 2.0,
         top_k: int = 64,
+        top_k_mode: str = "fixed",
+        kneedle_candidate_k: int = 256,
+        min_top_k: int = 4,
+        max_top_k: int | None = None,
+        kl_mode: str = "symmetric",
         min_prob: float = 0.0,
     ) -> None:
         self.lm_weight = lm_weight
@@ -34,6 +39,11 @@ class SwitchKDLoss:
         self.vsd_weight = vsd_weight
         self.temperature = temperature
         self.top_k = top_k
+        self.top_k_mode = top_k_mode
+        self.kneedle_candidate_k = kneedle_candidate_k
+        self.min_top_k = min_top_k
+        self.max_top_k = max_top_k
+        self.kl_mode = kl_mode
         self.min_prob = min_prob
         self._debug_emitted = False
 
@@ -58,6 +68,10 @@ class SwitchKDLoss:
                 f"teacher_reference={'compact' if isinstance(teacher_logits, dict) else 'dense' if teacher_logits is not None else 'none'}",
                 f"switch_reference={'compact' if isinstance(switch_logits, dict) else 'dense' if switch_logits is not None else 'none'}",
                 f"student_logits_shape={tuple(student_logits.shape)}",
+                f"top_k_mode={self.top_k_mode}",
+                f"kl_mode={self.kl_mode}",
+                f"dbild_top_k={self.top_k}",
+                f"kneedle_candidate_k={self.kneedle_candidate_k}",
             )
 
         dbild_loss = zero
@@ -68,6 +82,11 @@ class SwitchKDLoss:
                 attention_mask=attention_mask,
                 temperature=self.temperature,
                 top_k=self.top_k,
+                top_k_mode=self.top_k_mode,
+                kneedle_candidate_k=self.kneedle_candidate_k,
+                min_top_k=self.min_top_k,
+                max_top_k=self.max_top_k,
+                kl_mode=self.kl_mode,
                 min_prob=self.min_prob,
                 token_weight=teacher_token_weight,
                 sample_weight=sample_weight,
@@ -83,6 +102,11 @@ class SwitchKDLoss:
                 attention_mask=attention_mask,
                 temperature=self.temperature,
                 top_k=self.top_k,
+                top_k_mode=self.top_k_mode,
+                kneedle_candidate_k=self.kneedle_candidate_k,
+                min_top_k=self.min_top_k,
+                max_top_k=self.max_top_k,
+                kl_mode=self.kl_mode,
                 min_prob=self.min_prob,
                 token_weight=switch_token_weight,
                 sample_weight=sample_weight,
@@ -105,6 +129,8 @@ def _emit_reference_debug(
     gathered_logits_shape=None,
     candidate_count_shape=None,
     candidate_count_max=None,
+    student_token_k_stats=None,
+    reference_token_k_stats=None,
 ):
     print(
         f"Switch-KD {label} path:",
@@ -115,18 +141,25 @@ def _emit_reference_debug(
         f"gathered_student_candidate_logits={tuple(gathered_logits_shape) if gathered_logits_shape is not None else None}",
         f"candidate_count_shape={tuple(candidate_count_shape) if candidate_count_shape is not None else None}",
         f"candidate_count_max={candidate_count_max}",
+        f"student_token_k_stats={student_token_k_stats}",
+        f"reference_token_k_stats={reference_token_k_stats}",
     )
 
 
-def _build_candidate_union(student_top_indices, reference_top_indices, reference_active=None):
+def _build_candidate_union(
+    student_top_indices,
+    reference_top_indices,
+    student_active=None,
+    reference_active=None,
+):
     import torch
 
     combined_indices = torch.cat([student_top_indices, reference_top_indices], dim=-1)
-    student_active = torch.ones_like(student_top_indices, dtype=torch.bool)
+    if student_active is None:
+        student_active = torch.ones_like(student_top_indices, dtype=torch.bool)
     if reference_active is None:
-        combined_active = torch.ones_like(combined_indices, dtype=torch.bool)
-    else:
-        combined_active = torch.cat([student_active, reference_active], dim=-1)
+        reference_active = torch.ones_like(reference_top_indices, dtype=torch.bool)
+    combined_active = torch.cat([student_active, reference_active], dim=-1)
 
     sanitized_indices = torch.where(combined_active, combined_indices, torch.zeros_like(combined_indices))
     sorted_indices, sort_order = sanitized_indices.sort(dim=-1)
@@ -150,6 +183,51 @@ def _build_candidate_union(student_top_indices, reference_top_indices, reference
     candidate_active = position < candidate_count.unsqueeze(-1)
     candidate_indices = torch.where(candidate_active, candidate_indices, torch.zeros_like(candidate_indices))
     return candidate_indices, candidate_active, candidate_count
+
+
+def _kneedle_topk_indices(logits, *, candidate_k, min_top_k, max_top_k):
+    import torch
+
+    vocab_size = int(logits.shape[-1])
+    candidate_k = min(int(candidate_k), vocab_size)
+    if candidate_k < 1:
+        raise ValueError("candidate_k must be >= 1.")
+
+    top_values, top_indices = torch.topk(logits, k=candidate_k, dim=-1)
+    first_value = top_values[..., :1]
+    last_value = top_values[..., -1:]
+    eps = torch.finfo(top_values.dtype).eps if top_values.is_floating_point() else 1e-6
+    denom = (first_value - last_value).clamp_min(eps)
+    normalized_values = (top_values - last_value) / denom
+
+    rank = torch.arange(candidate_k, device=logits.device, dtype=top_values.dtype)
+    if candidate_k == 1:
+        normalized_rank = rank.view(*((1,) * (top_values.ndim - 1)), candidate_k)
+    else:
+        normalized_rank = (rank / float(candidate_k - 1)).view(*((1,) * (top_values.ndim - 1)), candidate_k)
+    knee_score = normalized_values - (1.0 - normalized_rank)
+
+    token_k = knee_score.argmax(dim=-1) + 1
+    effective_max_top_k = candidate_k if max_top_k is None else min(candidate_k, int(max_top_k))
+    token_k = token_k.clamp(min=int(min_top_k), max=effective_max_top_k)
+    top_indices = top_indices[..., :effective_max_top_k]
+    active = torch.arange(effective_max_top_k, device=logits.device).view(
+        *((1,) * (token_k.ndim)),
+        effective_max_top_k,
+    ) < token_k.unsqueeze(-1)
+    top_indices = torch.where(active, top_indices, torch.zeros_like(top_indices))
+    return top_indices, active, token_k
+
+
+def _token_k_stats(token_k):
+    if token_k is None or token_k.numel() == 0:
+        return None
+    token_k_float = token_k.float()
+    return {
+        "min": float(token_k_float.min().item()),
+        "max": float(token_k_float.max().item()),
+        "mean": float(token_k_float.float().mean().item()),
+    }
 
 
 def _apply_candidate_min_prob(
@@ -181,6 +259,11 @@ def dynamic_bidirectional_logits_difference(
     attention_mask=None,
     temperature: float = 2.0,
     top_k: int = 64,
+    top_k_mode: str = "fixed",
+    kneedle_candidate_k: int = 256,
+    min_top_k: int = 4,
+    max_top_k: int | None = None,
+    kl_mode: str = "symmetric",
     min_prob: float = 0.0,
     token_weight=None,
     sample_weight: float | None = None,
@@ -198,6 +281,11 @@ def dynamic_bidirectional_logits_difference(
             attention_mask=attention_mask,
             temperature=temperature,
             top_k=top_k,
+            top_k_mode=top_k_mode,
+            kneedle_candidate_k=kneedle_candidate_k,
+            min_top_k=min_top_k,
+            max_top_k=max_top_k,
+            kl_mode=kl_mode,
             min_prob=min_prob,
             token_weight=token_weight,
             sample_weight=sample_weight,
@@ -214,9 +302,35 @@ def dynamic_bidirectional_logits_difference(
     vocab_size = student_logits.shape[-1]
     effective_top_k = min(top_k, vocab_size)
     safe_temperature = max(float(temperature), 1e-6)
-    student_top_indices = torch.topk(student_logits, k=effective_top_k, dim=-1).indices
-    reference_top_indices = torch.topk(reference_logits, k=effective_top_k, dim=-1).indices
-    candidate_indices, candidate_active, candidate_count = _build_candidate_union(student_top_indices, reference_top_indices)
+    student_active = None
+    reference_active = None
+    student_token_k = None
+    reference_token_k = None
+    if top_k_mode == "fixed":
+        student_top_indices = torch.topk(student_logits, k=effective_top_k, dim=-1).indices
+        reference_top_indices = torch.topk(reference_logits, k=effective_top_k, dim=-1).indices
+    elif top_k_mode == "kneedle":
+        student_top_indices, student_active, student_token_k = _kneedle_topk_indices(
+            student_logits,
+            candidate_k=kneedle_candidate_k,
+            min_top_k=min_top_k,
+            max_top_k=max_top_k,
+        )
+        reference_top_indices, reference_active, reference_token_k = _kneedle_topk_indices(
+            reference_logits,
+            candidate_k=kneedle_candidate_k,
+            min_top_k=min_top_k,
+            max_top_k=max_top_k,
+        )
+    else:
+        raise ValueError(f"Unsupported top_k_mode: {top_k_mode}")
+
+    candidate_indices, candidate_active, candidate_count = _build_candidate_union(
+        student_top_indices,
+        reference_top_indices,
+        student_active=student_active,
+        reference_active=reference_active,
+    )
 
     student_candidate_logits = torch.gather(student_logits, dim=-1, index=candidate_indices)
     reference_candidate_logits = torch.gather(reference_logits, dim=-1, index=candidate_indices)
@@ -229,6 +343,8 @@ def dynamic_bidirectional_logits_difference(
             gathered_logits_shape=student_candidate_logits.shape,
             candidate_count_shape=candidate_count.shape,
             candidate_count_max=int(candidate_count.max().item()) if candidate_count.numel() > 0 else 0,
+            student_token_k_stats=_token_k_stats(student_token_k),
+            reference_token_k_stats=_token_k_stats(reference_token_k),
         )
 
     fill_value = student_candidate_logits.new_full((), _INACTIVE_LOGIT)
@@ -248,7 +364,12 @@ def dynamic_bidirectional_logits_difference(
 
     forward_kl = (reference_region_probs * (reference_log_probs - student_log_probs)).sum(dim=-1)
     reverse_kl = (student_region_probs * (student_log_probs - reference_log_probs)).sum(dim=-1)
-    token_loss = 0.5 * (forward_kl + reverse_kl) * (safe_temperature**2)
+    if kl_mode == "symmetric":
+        token_loss = 0.5 * (forward_kl + reverse_kl) * (safe_temperature**2)
+    elif kl_mode == "reverse":
+        token_loss = reverse_kl * (safe_temperature**2)
+    else:
+        raise ValueError(f"Unsupported kl_mode: {kl_mode}")
 
     if token_weight is not None:
         token_loss = token_loss * token_weight.to(token_loss.dtype)
@@ -272,6 +393,11 @@ def visual_switch_divergence(
     attention_mask=None,
     temperature: float = 2.0,
     top_k: int = 64,
+    top_k_mode: str = "fixed",
+    kneedle_candidate_k: int = 256,
+    min_top_k: int = 4,
+    max_top_k: int | None = None,
+    kl_mode: str = "symmetric",
     min_prob: float = 0.0,
     token_weight=None,
     sample_weight: float | None = None,
@@ -284,6 +410,11 @@ def visual_switch_divergence(
         attention_mask=attention_mask,
         temperature=temperature,
         top_k=top_k,
+        top_k_mode=top_k_mode,
+        kneedle_candidate_k=kneedle_candidate_k,
+        min_top_k=min_top_k,
+        max_top_k=max_top_k,
+        kl_mode=kl_mode,
         min_prob=min_prob,
         token_weight=token_weight,
         sample_weight=sample_weight,
@@ -299,6 +430,11 @@ def _compact_bidirectional_logits_difference(
     attention_mask=None,
     temperature: float = 2.0,
     top_k: int = 64,
+    top_k_mode: str = "fixed",
+    kneedle_candidate_k: int = 256,
+    min_top_k: int = 4,
+    max_top_k: int | None = None,
+    kl_mode: str = "symmetric",
     min_prob: float = 0.0,
     token_weight=None,
     sample_weight: float | None = None,
@@ -324,17 +460,31 @@ def _compact_bidirectional_logits_difference(
         )
 
     safe_temperature = max(float(temperature), 1e-6)
-    effective_top_k = min(top_k, student_logits.shape[-1])
-    student_top_indices = torch.topk(student_logits, k=effective_top_k, dim=-1).indices
     if token_k is None:
         reference_active = torch.ones_like(reference_indices, dtype=torch.bool)
     else:
         positions = torch.arange(reference_indices.shape[-1], device=reference_indices.device).view(1, 1, -1)
         reference_active = positions < token_k.unsqueeze(-1)
 
+    student_active = None
+    student_token_k = None
+    if top_k_mode == "fixed":
+        effective_top_k = min(top_k, student_logits.shape[-1])
+        student_top_indices = torch.topk(student_logits, k=effective_top_k, dim=-1).indices
+    elif top_k_mode == "kneedle":
+        student_top_indices, student_active, student_token_k = _kneedle_topk_indices(
+            student_logits,
+            candidate_k=kneedle_candidate_k,
+            min_top_k=min_top_k,
+            max_top_k=max_top_k,
+        )
+    else:
+        raise ValueError(f"Unsupported top_k_mode: {top_k_mode}")
+
     candidate_indices, candidate_active, candidate_count = _build_candidate_union(
         student_top_indices,
         reference_indices,
+        student_active=student_active,
         reference_active=reference_active,
     )
     student_candidate_logits = torch.gather(student_logits, dim=-1, index=candidate_indices)
@@ -358,6 +508,8 @@ def _compact_bidirectional_logits_difference(
             gathered_logits_shape=student_candidate_logits.shape,
             candidate_count_shape=candidate_count.shape,
             candidate_count_max=int(candidate_count.max().item()) if candidate_count.numel() > 0 else 0,
+            student_token_k_stats=_token_k_stats(student_token_k),
+            reference_token_k_stats=_token_k_stats(token_k),
         )
 
     fill_value = student_candidate_logits.new_full((), _INACTIVE_LOGIT)
@@ -377,7 +529,12 @@ def _compact_bidirectional_logits_difference(
 
     forward_kl = (reference_probs * (reference_log_probs - student_log_probs)).sum(dim=-1)
     reverse_kl = (student_probs * (student_log_probs - reference_log_probs)).sum(dim=-1)
-    token_loss = 0.5 * (forward_kl + reverse_kl) * (safe_temperature**2)
+    if kl_mode == "symmetric":
+        token_loss = 0.5 * (forward_kl + reverse_kl) * (safe_temperature**2)
+    elif kl_mode == "reverse":
+        token_loss = reverse_kl * (safe_temperature**2)
+    else:
+        raise ValueError(f"Unsupported kl_mode: {kl_mode}")
 
     active_tokens = reference_active.any(dim=-1).to(token_loss.dtype)
     token_loss = token_loss * active_tokens

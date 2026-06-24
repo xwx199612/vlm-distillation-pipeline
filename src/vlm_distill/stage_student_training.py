@@ -310,6 +310,11 @@ def _build_switch_kd_trainer():
                 vsd_weight=distill.vsd_loss_weight,
                 temperature=distill.kd_temperature,
                 top_k=distill.dbild_top_k,
+                top_k_mode=distill.dbild_top_k_mode,
+                kneedle_candidate_k=distill.dbild_kneedle_candidate_k,
+                min_top_k=distill.dbild_min_top_k,
+                max_top_k=distill.dbild_max_top_k,
+                kl_mode=distill.dbild_kl_mode,
                 min_prob=distill.dbild_min_prob,
             )
             self._switch_kd_last_losses: dict[str, float] | None = None

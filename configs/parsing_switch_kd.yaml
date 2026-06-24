@@ -153,6 +153,11 @@ distillation:
   vsd_loss_weight: 0.5
   kd_temperature: 2.0
   dbild_top_k: 64
+  dbild_top_k_mode: kneedle
+  dbild_kneedle_candidate_k: 256
+  dbild_min_top_k: 4
+  dbild_max_top_k: 128
+  dbild_kl_mode: reverse
   dbild_min_prob: 0.0
   teacher_logits_field: teacher_logits
   switch_logits_field: switch_logits

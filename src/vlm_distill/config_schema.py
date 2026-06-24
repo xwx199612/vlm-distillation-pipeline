@@ -86,6 +86,11 @@ class DistillationConfig:
     vsd_loss_weight: float = 0.5
     kd_temperature: float = 2.0
     dbild_top_k: int = 64
+    dbild_top_k_mode: str = "fixed"
+    dbild_kneedle_candidate_k: int = 256
+    dbild_min_top_k: int = 4
+    dbild_max_top_k: int | None = None
+    dbild_kl_mode: str = "symmetric"
     dbild_min_prob: float = 0.0
     teacher_logits: bool = True
     teacher_logits_field: str = "teacher_logits"
@@ -241,6 +246,26 @@ def _build_distillation_config(raw: dict[str, Any]) -> DistillationConfig:
             values[key] = remap_output_path_string(values[key])
     if values.get("student_visual_cache_dir") is not None:
         values["student_visual_cache_dir"] = remap_output_path(Path(values["student_visual_cache_dir"]))
+    dbild_top_k_mode = values.get("dbild_top_k_mode", "fixed")
+    if dbild_top_k_mode not in {"fixed", "kneedle"}:
+        raise ValueError("distillation.dbild_top_k_mode must be one of: fixed, kneedle.")
+    dbild_kl_mode = values.get("dbild_kl_mode", "symmetric")
+    if dbild_kl_mode not in {"symmetric", "reverse"}:
+        raise ValueError("distillation.dbild_kl_mode must be one of: symmetric, reverse.")
+    dbild_min_top_k = int(values.get("dbild_min_top_k", 4))
+    if dbild_min_top_k < 1:
+        raise ValueError("distillation.dbild_min_top_k must be >= 1.")
+    dbild_kneedle_candidate_k = int(values.get("dbild_kneedle_candidate_k", 256))
+    if dbild_kneedle_candidate_k < dbild_min_top_k:
+        raise ValueError("distillation.dbild_kneedle_candidate_k must be >= distillation.dbild_min_top_k.")
+    values["dbild_min_top_k"] = dbild_min_top_k
+    values["dbild_kneedle_candidate_k"] = dbild_kneedle_candidate_k
+    dbild_max_top_k = values.get("dbild_max_top_k")
+    if dbild_max_top_k is not None:
+        dbild_max_top_k = int(dbild_max_top_k)
+        if dbild_max_top_k < dbild_min_top_k:
+            raise ValueError("distillation.dbild_max_top_k must be >= distillation.dbild_min_top_k.")
+        values["dbild_max_top_k"] = dbild_max_top_k
     return DistillationConfig(**values)
 
 

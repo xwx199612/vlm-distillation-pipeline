@@ -207,6 +207,7 @@ distillation:
   switch_logits_field: switch_logits
   use_cached_logits: true
   student_vision_path: model.visual
+  teacher_projector_path: null
   student_projector_path: __identity__
   teacher_lm_path: model.language_model
   teacher_token_embedding_path: model.language_model.embed_tokens
