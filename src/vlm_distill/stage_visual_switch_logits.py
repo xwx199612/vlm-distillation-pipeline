@@ -14,7 +14,6 @@ from .config_schema import (
     format_prompt,
     resolve_label_path,
     resolve_switch_logits_path,
-    resolve_teacher_logits_path,
 )
 from .data_manifest import VlmSample, read_jsonl, validate_manifest
 from .device_utils import (
@@ -808,7 +807,6 @@ def _nested_shape(value: Any) -> tuple[int, ...]:
 def _load_switch_base_rows(config: PipelineConfig) -> list[dict[str, Any]]:
     candidate_paths = (
         resolve_label_path(config.data),
-        resolve_teacher_logits_path(config.data),
         resolve_switch_logits_path(config.data),
     )
     seen: set[Path] = set()

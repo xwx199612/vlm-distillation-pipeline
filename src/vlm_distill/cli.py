@@ -9,10 +9,9 @@ from .hf_runtime import configure_hf_offline_mode
 from .label_validation import build_teacher_token_decoder, validate_label_rows
 from .manifest_builder import create_manifest_from_config, infer_manifest_task_from_config_path
 from .stage_evaluation import evaluate
-from .stage_answer_labeling import create_distillation_dataset
 from .stage_prediction_evaluation import evaluate_predictions
 from .stage_student_prediction import create_student_predictions
-from .stage_teacher_logits import create_teacher_logits_dataset, create_teacher_precompute_dataset
+from .stage_teacher_precompute import create_teacher_precompute_dataset
 from .stage_student_training import train_student
 from .stage_visual_switch_logits import create_visual_switch_dataset
 
@@ -32,7 +31,6 @@ def main() -> None:
         "label",
         "teacher-precompute",
         "predict",
-        "teacher-logits",
         "switch-logits",
         "train",
         "evaluate",
@@ -119,9 +117,10 @@ def main() -> None:
         return
 
     if args.command == "teacher-logits":
-        output_path = create_teacher_logits_dataset(config)
-        print(f"OK teacher logits written: {output_path}")
-        return
+        raise RuntimeError(
+            "teacher-logits is deprecated. Use label or teacher-precompute. "
+            "Set distillation.teacher_logits=true."
+        )
 
     if args.command == "switch-logits":
         output_path = create_visual_switch_dataset(config)

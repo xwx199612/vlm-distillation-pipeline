@@ -10,7 +10,7 @@ from typing import Protocol
 from .config_schema import PipelineConfig, format_prompt, resolve_prediction_path
 from .data_manifest import VlmSample, read_jsonl
 from .model_loading import apply_attn_implementation, resolve_model_path
-from .stage_answer_labeling import _load_teacher_image, _normalize_teacher_answer
+from .stage_teacher_precompute import _load_teacher_image, _normalize_teacher_answer
 
 
 class StudentBackend(Protocol):

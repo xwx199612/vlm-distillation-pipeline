@@ -20,8 +20,8 @@ This configuration is tuned for the 16GB version of RTX 4060 Ti. With 16GB, the 
 
 ## Project Files
 
-- `src/vlm_distill/stage_teacher_logits.py`
-  - Generates cached teacher logits
+- `src/vlm_distill/stage_teacher_precompute.py`
+  - Generates unified teacher_answer, teacher_tokens, and cached teacher_logits
   - Longer teacher outputs are practical on 16GB
 
 - `src/vlm_distill/stage_visual_switch_logits.py`

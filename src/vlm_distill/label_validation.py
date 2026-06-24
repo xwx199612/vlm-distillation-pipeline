@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Callable, Any
 
 from .data_manifest import read_jsonl
-from .stage_answer_labeling import (
+from .stage_teacher_precompute import (
     _canonicalize_teacher_answer,
     _parse_json_object,
     _strip_special_tokens,

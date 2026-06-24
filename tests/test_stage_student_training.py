@@ -87,7 +87,6 @@ def _switch_kd_config(tmp_path: Path) -> PipelineConfig:
         data=DataConfig(
             manifest_path=tmp_path / "manifest.jsonl",
             distill_path=tmp_path / "labels.jsonl",
-            teacher_logits_path=tmp_path / "teacher_logits.jsonl",
             switch_logits_path=tmp_path / "switch_logits.jsonl",
         ),
         teacher=TeacherConfig(model_name="mock-teacher"),

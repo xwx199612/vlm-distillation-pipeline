@@ -120,12 +120,29 @@ distillation:
         "create_teacher_precompute_dataset",
         lambda config, samples: calls.append("teacher_precompute") or tmp_path / "labels.jsonl",
     )
-    monkeypatch.setattr(
-        cli,
-        "create_distillation_dataset",
-        lambda *args, **kwargs: calls.append("answer_labeling") or tmp_path / "old.jsonl",
-    )
 
     cli.main()
 
     assert calls == ["teacher_precompute"]
+
+
+def test_cli_no_longer_imports_old_label_generation_flow():
+    text = Path("src/vlm_distill/cli.py").read_text(encoding="utf-8")
+
+    assert "stage_teacher_precompute import create_teacher_precompute_dataset" in text
+    assert "stage_answer_labeling import create_distillation_dataset" not in text
+    assert '"teacher-logits",' not in text
+
+
+def test_old_teacher_modules_are_wrappers_only():
+    for path in (
+        Path("src/vlm_distill/stage_answer_labeling.py"),
+        Path("src/vlm_distill/stage_teacher_logits.py"),
+    ):
+        text = path.read_text(encoding="utf-8")
+
+        assert "from .stage_teacher_precompute import" in text
+        assert "class HuggingFaceTeacher" not in text
+        assert "class TeacherLogitsGenerator" not in text
+        assert "def create_teacher_precompute_dataset" not in text
+        assert "def create_distillation_dataset" not in text

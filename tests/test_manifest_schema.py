@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from PIL import Image
-import vlm_distill.stage_teacher_logits as stage_teacher_logits
+import vlm_distill.stage_teacher_precompute as stage_teacher_precompute
 
 from vlm_distill.config_schema import (
     DataConfig,
@@ -21,12 +21,12 @@ from vlm_distill.config_schema import (
 from vlm_distill.data_manifest import VlmSample, summarize_label_rows, validate_manifest
 from vlm_distill.manifest_builder import infer_manifest_task_from_config_path
 from vlm_distill.stage_answer_labeling import _format_prompt, _load_teacher_image
-from vlm_distill.stage_teacher_logits import (
+from vlm_distill.stage_teacher_precompute import (
     TeacherLogitsGenerator,
     _is_valid_logits_row,
     _load_completed_ids,
     _resolve_teacher_logits_mode,
-    create_teacher_logits_dataset,
+    create_teacher_precompute_dataset,
 )
 from vlm_distill.vlm_batching import load_training_image
 
@@ -269,7 +269,7 @@ def test_teacher_logits_row_validation_rejects_label_only_row():
     assert not _is_valid_logits_row({"id": "x", "teacher_answer": "answer"}, "teacher_logits")
 
 
-def test_teacher_logits_switch_kd_mock_writes_logits_dict(tmp_path: Path):
+def test_teacher_precompute_switch_kd_mock_writes_logits_dict_to_label_path(tmp_path: Path):
     image_root = tmp_path / "images"
     _make_image(image_root / "screen.jpg")
     manifest = tmp_path / "manifest.jsonl"
@@ -277,12 +277,12 @@ def test_teacher_logits_switch_kd_mock_writes_logits_dict(tmp_path: Path):
         json.dumps({"id": "sample-1", "image": "screen.jpg", "task": "parsing", "query": "q"}) + "\n",
         encoding="utf-8",
     )
-    output_path = tmp_path / "teacher_logits.jsonl"
+    output_path = tmp_path / "labels.jsonl"
     config = PipelineConfig(
         data=DataConfig(
             manifest_path=manifest,
             distill_path=tmp_path / "distill.jsonl",
-            teacher_logits_path=output_path,
+            label_path=output_path,
             image_root=image_root,
         ),
         teacher=TeacherConfig(model_name="mock-teacher", backend="mock"),
@@ -290,7 +290,7 @@ def test_teacher_logits_switch_kd_mock_writes_logits_dict(tmp_path: Path):
         distillation=DistillationConfig(method="switch_kd"),
     )
 
-    create_teacher_logits_dataset(config)
+    create_teacher_precompute_dataset(config)
     row = json.loads(output_path.read_text(encoding="utf-8").strip())
 
     assert row["teacher_logits_format"] == "adaptive_topk"
@@ -392,6 +392,11 @@ def test_teacher_logits_uses_teacher_resize_setting(tmp_path: Path, monkeypatch)
         def tolist(self):
             return [[4]]
 
+    class DummyProcessor:
+        def __call__(self, text, return_tensors=None):
+            del return_tensors
+            return {"input_ids": [[ord(char) for char in text[0]]]}
+
     def fake_load_teacher_image(path: Path, resize_mode: str):
         captured["path"] = str(path)
         captured["resize_mode"] = resize_mode
@@ -399,15 +404,14 @@ def test_teacher_logits_uses_teacher_resize_setting(tmp_path: Path, monkeypatch)
 
     def fake_load():
         generator._model = DummyModel()
-        generator._processor = object()
+        generator._processor = DummyProcessor()
 
-    monkeypatch.setattr(stage_teacher_logits, "_load_teacher_image", fake_load_teacher_image)
+    monkeypatch.setattr(stage_teacher_precompute, "_load_teacher_image", fake_load_teacher_image)
     monkeypatch.setattr(generator, "load", fake_load)
     monkeypatch.setattr(generator, "_build_multimodal_inputs", lambda image, prompt: {"input_ids": DummyInputIds()})
-    monkeypatch.setattr(stage_teacher_logits, "_move_batch_to_device", lambda batch, device: batch)
     monkeypatch.setattr(generator, "_generate", lambda inputs, include_scores: object())
     monkeypatch.setattr(
-        stage_teacher_logits,
+        stage_teacher_precompute,
         "_extract_generated_ids_and_scores",
         lambda generation, prompt_len, include_scores: (DummyGeneratedIds(), []),
     )

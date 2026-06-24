@@ -74,15 +74,10 @@ def test_align_reference_logits_to_suffix_places_answer_region():
 
 def test_load_training_rows_merges_label_and_logits_files(tmp_path):
     label_path = tmp_path / "labels.jsonl"
-    teacher_logits_path = tmp_path / "teacher_logits.jsonl"
     switch_logits_path = tmp_path / "switch_logits.jsonl"
 
     label_path.write_text(
-        '{"id":"sample-1","image":"a.png","task":"parsing","query":"q","teacher_answer":"{\\"elements\\":[\\"Home\\"]}"}\n',
-        encoding="utf-8",
-    )
-    teacher_logits_path.write_text(
-        '{"id":"sample-1","teacher_logits":{"vocab_size":4},"teacher_logits_prompt_len":2,"teacher_logits_vocab_size":4}\n',
+        '{"id":"sample-1","image":"a.png","task":"parsing","query":"q","teacher_answer":"{\\"elements\\":[\\"Home\\"]}","teacher_logits":{"vocab_size":4},"teacher_logits_prompt_len":2,"teacher_logits_vocab_size":4}\n',
         encoding="utf-8",
     )
     switch_logits_path.write_text(
@@ -95,7 +90,6 @@ def test_load_training_rows_merges_label_and_logits_files(tmp_path):
             manifest_path=tmp_path / "manifest.jsonl",
             distill_path=tmp_path / "legacy.jsonl",
             label_path=label_path,
-            teacher_logits_path=teacher_logits_path,
             switch_logits_path=switch_logits_path,
         ),
         teacher=TeacherConfig(model_name="mock-teacher"),

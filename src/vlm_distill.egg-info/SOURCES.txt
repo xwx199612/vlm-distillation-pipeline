@@ -16,6 +16,7 @@ src/vlm_distill/stage_prediction_evaluation.py
 src/vlm_distill/stage_student_prediction.py
 src/vlm_distill/stage_student_training.py
 src/vlm_distill/stage_teacher_logits.py
+src/vlm_distill/stage_teacher_precompute.py
 src/vlm_distill/stage_visual_switch_logits.py
 src/vlm_distill/vlm_batching.py
 src/vlm_distill.egg-info/PKG-INFO

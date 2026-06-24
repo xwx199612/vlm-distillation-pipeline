@@ -180,20 +180,6 @@ This reads `data.manifest_path` and writes predictions to `data.prediction_path`
 
 ---
 
-## Legacy Teacher Logits Backfill
-
-```powershell
-vlm-distill teacher-logits \
-  --config configs/switch_kd_4060ti.yaml
-```
-
-This command is deprecated for the main Switch-KD workflow. Use it only to
-backfill older valid teacher label files that are missing `teacher_logits`.
-New Switch-KD runs should use `label` or `teacher-precompute`, which generate
-`teacher_answer`, `teacher_tokens`, and `teacher_logits` together.
-
----
-
 ## Generate Switch-KD Visual Logits
 
 ```powershell
@@ -738,10 +724,10 @@ vlm-distill evaluate \
   --config configs/switch_kd_4060ti.yaml
 ```
 
-For Switch-KD, use `label` or `teacher-precompute` followed by `switch-logits`
+For Switch-KD, use `label` or `teacher-precompute`, followed by `switch-logits`
 and `train`. `distillation.teacher_logits: true` means teacher logits are
-generated during `label`/`teacher-precompute`; `teacher-logits` is a legacy
-backfill command and is not part of the main pipeline.
+generated during `label`/`teacher-precompute` into `data.label_path`, the
+canonical unified teacher output.
 
 Training objective:
 

@@ -173,6 +173,10 @@ vlm-distill label \
   --config configs/parsing_labeling.yaml
 ```
 
+`label` now runs unified teacher precompute. For Switch-KD configs with
+`distillation.teacher_logits: true`, this writes `teacher_answer`,
+`teacher_tokens`, and answer-only `teacher_logits` to `data.label_path`.
+
 ---
 
 ## Batch Predict With Student Or Merged Model
@@ -183,15 +187,6 @@ vlm-distill predict \
 ```
 
 This reads `data.manifest_path` and writes predictions to `data.prediction_path` when set, otherwise `data.distill_path`.
-
----
-
-## Generate Teacher Logits
-
-```powershell
-vlm-distill teacher-logits \
-  --config configs/switch_kd_4060ti.yaml
-```
 
 ---
 
@@ -699,9 +694,6 @@ vlm-distill label \
   --config configs/switch_kd_4060ti.yaml
 
 vlm-distill validate-labels \
-  --config configs/switch_kd_4060ti.yaml
-
-vlm-distill teacher-logits \
   --config configs/switch_kd_4060ti.yaml
 
 vlm-distill switch-logits \
