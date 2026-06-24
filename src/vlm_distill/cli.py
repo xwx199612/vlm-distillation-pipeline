@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from . import teacher_validation
 from .config_schema import load_config, resolve_label_path, resolve_prediction_path
 from .data_manifest import validate_manifest
 from .hf_runtime import configure_hf_offline_mode
@@ -13,7 +14,6 @@ from .stage_student_prediction import create_student_predictions
 from .stage_teacher_precompute import create_teacher_precompute_dataset
 from .stage_student_training import train_student
 from .stage_visual_switch_logits import create_visual_switch_dataset
-from .teacher_validation import build_teacher_token_decoder, validate_teacher_output_file
 
 
 def main() -> None:
@@ -72,13 +72,13 @@ def main() -> None:
         return
 
     if args.command == "validate-teacher":
-        decoder = build_teacher_token_decoder(config)
+        decoder = teacher_validation.build_teacher_token_decoder(config)
         require_logits = bool(config.distillation.teacher_logits)
         if decoder is None:
             raise RuntimeError(
                 "Teacher tokenizer unavailable; cannot validate teacher_tokens."
             )
-        summary = validate_teacher_output_file(
+        summary = teacher_validation.validate_teacher_output_file(
             resolve_label_path(config.data),
             max_samples=config.data.max_samples,
             decode_tokens=decoder,

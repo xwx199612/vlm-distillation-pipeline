@@ -154,7 +154,7 @@ vlm-distill validate-manifest \
 ## Validate Labels
 
 ```powershell
-vlm-distill validate-labels \
+vlm-distill validate-teacher \
   --config configs/parsing_response_distillation.yaml
 ```
 
@@ -321,7 +321,7 @@ Expected teacher response:
 Validate generated labels:
 
 ```powershell
-vlm-distill validate-labels \
+vlm-distill validate-teacher \
   --config configs/parsing_labeling.yaml
 ```
 
@@ -412,7 +412,7 @@ D:\TV_data\teacher_parsing\grounding_teacher_labels.jsonl
 Validate generated labels:
 
 ```powershell
-vlm-distill validate-labels \
+vlm-distill validate-teacher \
   --config configs/grounding_test.yaml
 ```
 
@@ -550,7 +550,7 @@ Validate the response distillation inputs:
 ```powershell
 vlm-distill validate-manifest --config configs/parsing_response_distillation.yaml
 
-vlm-distill validate-labels --config configs/parsing_response_distillation.yaml
+vlm-distill validate-teacher --config configs/parsing_response_distillation.yaml
 ```
 
 ## Step 6
@@ -693,7 +693,7 @@ vlm-distill validate-manifest \
 vlm-distill label \
   --config configs/switch_kd_4060ti.yaml
 
-vlm-distill validate-labels \
+vlm-distill validate-teacher \
   --config configs/switch_kd_4060ti.yaml
 
 vlm-distill switch-logits \

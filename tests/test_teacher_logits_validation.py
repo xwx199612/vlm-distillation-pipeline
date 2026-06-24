@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
 
+from vlm_distill.config_schema import load_config, resolve_label_path
+import vlm_distill.cli as cli
 from vlm_distill.teacher_validation import validate_teacher_output_file, validate_teacher_row
 
 
@@ -235,28 +238,53 @@ def test_missing_logits_metadata_fails(field, value, expected_reason):
     assert expected_reason in str(reason)
 
 
-def test_deprecated_validate_labels_alias_is_rejected(monkeypatch, tmp_path: Path):
-    import sys
-    import vlm_distill.cli as cli
+def test_validate_teacher_cli_works(monkeypatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    config_path = Path("configs/parsing_switch_kd.yaml")
+    monkeypatch.setenv("VLM_DISTILL_OUTPUT_ROOT", str(tmp_path))
+    monkeypatch.setattr(cli.teacher_validation, "build_teacher_token_decoder", lambda _config: _matching_decode)
 
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        """
-data:
-  manifest_path: manifest.jsonl
-  distill_path: distill.jsonl
-  label_path: labels.jsonl
-teacher:
-  model_name: mock-teacher
-student:
-  model_name: mock-student
-  output_dir: out
-  adapter_dir: adapter
-""".strip(),
+    config = load_config(config_path)
+    label_path = resolve_label_path(config.data)
+    label_path.parent.mkdir(parents=True, exist_ok=True)
+    label_path.write_text(
+        json.dumps(
+            {
+                "id": "sample-1",
+                "image": "screen.png",
+                "query": "List the visible UI elements.",
+                "teacher_answer": _valid_answer(),
+                "teacher_tokens": [1, 2, 3],
+                "teacher_logits": _logits(3),
+                "teacher_logits_format": "adaptive_topk",
+                "teacher_logits_vocab_size": 8,
+                "teacher_logits_aligned_to_answer": True,
+            }
+        )
+        + "\n",
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(sys, "argv", ["vlm-distill", "validate-labels", "--config", str(config_path)])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["vlm-distill", "validate-teacher", "--config", str(config_path)],
+    )
+
+    cli.main()
+
+    output = capsys.readouterr().out
+    assert "OK validated teacher output path=" in output
+    assert "invalid_rows=0" in output
+
+
+def test_deprecated_validate_labels_alias_is_rejected(monkeypatch, tmp_path: Path):
+    config_path = Path("configs/parsing_switch_kd.yaml")
+    monkeypatch.setenv("VLM_DISTILL_OUTPUT_ROOT", str(tmp_path))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["vlm-distill", "validate-labels", "--config", str(config_path)],
+    )
 
     with pytest.raises(SystemExit, match="validate-labels is deprecated. Use validate-teacher."):
         cli.main()
