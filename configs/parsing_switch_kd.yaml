@@ -82,44 +82,68 @@ distillation:
     Identify all visible interactive UI elements in this screenshot.
 
     Interactive elements include:
-    - tabs
-    - buttons
-    - app icons
-    - app tiles
-    - menu items
-    - carousel tiles
-    - focused or highlighted items
-    - toggles
-    - search or text inputs
-    - clickable text links
-    - settings, account, search, or navigation icons
+
+    * tabs
+    * buttons
+    * app icons
+    * app tiles
+    * menu items
+    * carousel tiles
+    * focused or highlighted items
+    * toggles or switches
+    * search boxes or text inputs
+    * clickable text links
+    * settings, account, search, or navigation icons
 
     Exclude:
-    - movie descriptions
-    - recommendation summaries
-    - long informational text
-    - advertisements
-    - decorative or non-interactive text
+
+    * movie descriptions
+    * recommendation summaries
+    * long informational text
+    * advertisements
+    * decorative or non-interactive text
 
     Rules:
-    - Prefer recall over brevity.
-    - Do not return only the top navigation bar.
-    - Include every visible app icon, tile, card, tab, and focused item.
-    - If there are multiple rows or carousels, inspect all visible rows.
-    - Mark the focused or highlighted element if visible.
-    - If the text is unreadable but the element is clearly interactive, use a short visual name.
-    - Each element must be an object with text, type, and focused.
+
+    * Prefer recall over brevity.
+    * Do not return only the top navigation bar.
+    * Include every visible app icon, tile, card, tab, button, menu item, and focused item.
+    * If there are multiple rows or carousels, inspect all visible rows.
+    * Mark the focused or highlighted element with `"focused": true`.
+    * Use `"focused": false` for all other elements.
+    * If the text is unreadable but the element is clearly interactive, use a short visual name.
+    * Each element must be an object with exactly these fields: `"text"`, `"type"`, and `"focused"`.
+
+    The `"type"` field is a closed enum.
+    For every element, `"type"` MUST be exactly one of:
+    ["tab", "button", "app_icon", "app_tile", "menu_item", "tile", "toggle", "input", "icon", "link", "other", "unknown"]
+
+    Do not invent new type names.
+    Do not output values such as:
+    "card", "movie", "navigation", "nav", "search_bar", "setting", "settings", "text", "label", "image", "poster", "banner", or "carousel".
+
+    Map ambiguous UI elements to the closest allowed type:
+
+    * card, movie, poster, banner, recommendation, content, carousel -> "tile"
+    * app, application -> "app_icon"
+    * navigation, nav -> "tab"
+    * search, search_bar, search_box -> "input"
+    * setting, settings -> "icon"
+    * text, label, image -> "other"
+    * if unsure -> "other"
 
     Return raw JSON only.
     Do not explain.
     Do not use markdown.
+    Do not include comments.
+    Do not include trailing commas.
 
     Use this schema:
     {{
       "elements": [
         {{
           "text": "...",
-          "type": "tab|button|app_icon|app_tile|menu_item|tile|toggle|input|icon|link|other",
+          "type": "tab",
           "focused": true
         }}
       ]

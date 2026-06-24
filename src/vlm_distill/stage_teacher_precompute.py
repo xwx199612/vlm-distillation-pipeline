@@ -788,6 +788,20 @@ _SCREEN_SCHEMA_SUBSTRINGS = (
     "focused_element",
     "focus_state",
 )
+_ALLOWED_SCREEN_ELEMENT_TYPES = {
+    "tab",
+    "button",
+    "app_icon",
+    "app_tile",
+    "menu_item",
+    "tile",
+    "toggle",
+    "input",
+    "icon",
+    "link",
+    "other",
+    "unknown",
+}
 
 
 def _normalize_teacher_answer(sample: VlmSample, teacher_answer: str) -> str:
@@ -879,10 +893,13 @@ def _normalize_screen_elements(raw_elements: object) -> list[dict[str, object]]:
         if lowered in seen:
             continue
         seen.add(lowered)
+        normalized_type = _normalize_screen_element_type(element_type)
+        if lowered in _COMMON_TOP_TABS and normalized_type in {"unknown", "other", "input"}:
+            normalized_type = "tab"
         elements.append(
             {
                 "text": cleaned_label,
-                "type": _normalize_screen_element_type(element_type),
+                "type": normalized_type,
                 "focused": _normalize_screen_element_focused(focused),
             }
         )
@@ -914,8 +931,52 @@ def _labels_to_screen_elements(labels: list[str]) -> list[dict[str, object]]:
 
 
 def _normalize_screen_element_type(value: object) -> str:
-    cleaned = _clean_screen_label(str(value or "unknown")).lower()
-    return cleaned or "unknown"
+    if not isinstance(value, str):
+        return "unknown"
+
+    cleaned = _clean_screen_label(value)
+    if not cleaned:
+        return "unknown"
+
+    lowered = cleaned.lower()
+    snake = re.sub(r"[^a-z0-9]+", "_", lowered).strip("_")
+    snake = re.sub(r"_+", "_", snake)
+    if not snake:
+        return "unknown"
+    if snake in _ALLOWED_SCREEN_ELEMENT_TYPES:
+        return snake
+    if snake == "unknown":
+        return "other"
+
+    tokens = [token for token in snake.split("_") if token]
+    token_set = set(tokens)
+
+    if "app" in token_set or "application" in token_set:
+        return "app_icon"
+    if token_set & {"tile", "card", "carousel", "recommend", "movie", "content", "poster", "banner"}:
+        return "tile"
+    if "menu" in token_set:
+        return "menu_item"
+    if token_set & {"nav", "navigation"}:
+        return "tab"
+    if token_set & {"search", "box", "bar", "input", "text"}:
+        if token_set & {"search", "bar", "box", "input", "text"}:
+            return "input"
+    if token_set & {"toggle", "switch"}:
+        return "toggle"
+    if token_set & {"icon", "setting", "settings"}:
+        return "icon"
+    if "link" in token_set:
+        return "link"
+    if token_set & {"button", "btn"}:
+        return "button"
+    if token_set & {"text", "label", "image"}:
+        return "other"
+
+    if "unknown" in token_set:
+        return "other"
+
+    return "other"
 
 
 def _normalize_screen_element_focused(value: object) -> bool:

@@ -52,7 +52,8 @@ def build_vlm_data_collator(processor, *, logits_fields=("teacher_logits", "swit
     return VlmDataCollator(pad_token_id=pad_token_id, logits_fields=logits_fields)
 
 
-class VlmDataCollator:    """Pad multimodal features; keep cached logits as per-sample payloads."""
+class VlmDataCollator:
+    """Pad multimodal features; keep cached logits as per-sample payloads."""
     def __init__(
         self,
         pad_token_id: int = 0,
