@@ -363,6 +363,112 @@ print_stage_commands() {
   done
 }
 
+render_stage_progress_snapshot() {
+  local stage="$1"
+  shift
+  python - "$stage" "$@" <<'PY'
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+stage = sys.argv[1]
+pids = [int(arg) for arg in sys.argv[2:]]
+stage_slug = stage.replace("-", "_")
+shard_dir = Path("outputs/switch-kd/shards")
+
+if stage == "teacher-precompute":
+    output_template = "parsing_teacher_labels_shard{gpu}.jsonl"
+elif stage == "switch-logits":
+    output_template = "parsing_switch_logits_shard{gpu}.jsonl"
+else:
+    raise SystemExit(f"ERROR: unsupported monitor stage: {stage}")
+
+def count_non_empty_lines(path: Path) -> int:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            return sum(1 for line in handle if line.strip())
+    except FileNotFoundError:
+        return 0
+
+def last_non_empty_line(path: Path) -> str:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except FileNotFoundError:
+        return "[missing]"
+    for line in reversed(lines):
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return "[empty]"
+
+def truncate(text: str, limit: int = 180) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
+header = (
+    f"[progress:{stage}] "
+    "gpu pid shard_rows output_rows percent log_path last_non_empty_log_line"
+)
+print(header)
+for gpu_index, pid in enumerate(pids):
+    manifest_path = shard_dir / f"parsing_manifest_shard{gpu_index}.jsonl"
+    output_path = shard_dir / output_template.format(gpu=gpu_index)
+    log_path = shard_dir / f"{stage_slug}_gpu{gpu_index}.log"
+    shard_rows = count_non_empty_lines(manifest_path)
+    output_rows = count_non_empty_lines(output_path)
+    percent = 0.0
+    if shard_rows > 0:
+        percent = min(100.0, (output_rows / shard_rows) * 100.0)
+    last_line = truncate(last_non_empty_line(log_path))
+    print(
+        f"[progress:{stage}] "
+        f"gpu={gpu_index} pid={pid} shard_rows={shard_rows} "
+        f"output_rows={output_rows} percent={percent:.1f}% "
+        f"log_path={log_path} last_non_empty_log_line={last_line}"
+    )
+PY
+}
+
+monitor_stage_progress_start() {
+  local stage="$1"
+  shift
+  MONITOR_STAGE="${stage}"
+  MONITOR_PIDS=("$@")
+  MONITOR_STATE_DIR="$(mktemp -d "/tmp/switch-kd-${stage//[^[:alnum:]_]/_}.XXXXXX")"
+  (
+    set +e
+    render_stage_progress_snapshot "${MONITOR_STAGE}" "${MONITOR_PIDS[@]}"
+    while [[ ! -f "${MONITOR_STATE_DIR}/stop" ]]; do
+      for _ in 1 2 3 4 5 6 7 8 9 10; do
+        [[ -f "${MONITOR_STATE_DIR}/stop" ]] && break
+        sleep 1
+      done
+      [[ -f "${MONITOR_STATE_DIR}/stop" ]] && break
+      render_stage_progress_snapshot "${MONITOR_STAGE}" "${MONITOR_PIDS[@]}"
+    done
+  ) &
+  MONITOR_PID=$!
+}
+
+monitor_stage_progress_stop() {
+  if [[ -n "${MONITOR_STATE_DIR:-}" ]]; then
+    touch "${MONITOR_STATE_DIR}/stop"
+  fi
+  if [[ -n "${MONITOR_PID:-}" ]]; then
+    wait "${MONITOR_PID}" 2>/dev/null || true
+  fi
+  if [[ -n "${MONITOR_STATE_DIR:-}" && -d "${MONITOR_STATE_DIR}" ]]; then
+    rm -rf "${MONITOR_STATE_DIR}"
+  fi
+  MONITOR_PID=""
+  MONITOR_STATE_DIR=""
+  MONITOR_STAGE=""
+  MONITOR_PIDS=()
+}
+
 run_stage() {
   local stage="$1"
   local stage_slug="${stage//-/_}"
@@ -384,6 +490,8 @@ run_stage() {
   declare -a pids=()
   declare -a gpu_logs=()
 
+  trap 'monitor_stage_progress_stop' EXIT
+
   for gpu_index in 0 1 2 3; do
     local config_path="${GENERATED_CONFIG_DIR}/parsing_switch_kd_${stage_slug}_gpu${gpu_index}.yaml"
     local log_path="${SHARD_DIR}/${stage_slug}_gpu${gpu_index}.log"
@@ -395,6 +503,8 @@ run_stage() {
     pids+=("$!")
   done
 
+  monitor_stage_progress_start "${stage}" "${pids[@]}"
+
   for i in "${!pids[@]}"; do
     local pid="${pids[$i]}"
     local gpu_index="${i}"
@@ -403,6 +513,12 @@ run_stage() {
       failed=1
     fi
   done
+
+  monitor_stage_progress_stop
+  trap - EXIT
+
+  echo "=== final progress summary: ${stage} ==="
+  render_stage_progress_snapshot "${stage}" "${pids[@]}"
 
   if [[ "${failed}" -ne 0 ]]; then
     echo "ERROR: one or more ${stage} shard processes failed; merged output was not written."
