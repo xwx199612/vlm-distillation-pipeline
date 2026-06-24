@@ -116,12 +116,6 @@ def main() -> None:
         print(f"OK student predictions written: {output_path}")
         return
 
-    if args.command == "teacher-logits":
-        raise RuntimeError(
-            "teacher-logits is deprecated. Use label or teacher-precompute. "
-            "Set distillation.teacher_logits=true."
-        )
-
     if args.command == "switch-logits":
         output_path = create_visual_switch_dataset(config)
         print(f"OK visual-switch logits written: {output_path}")

@@ -4,7 +4,6 @@ from .stage_teacher_precompute import (
     INACTIVE_LOGIT,
     CompletedLogitsRows,
     DistillationMode,
-    TeacherLogitsGenerator,
     _assert_teacher_logits_answer_length,
     _compact_adaptive_generation_scores,
     _entropy_to_weight,
@@ -16,7 +15,6 @@ from .stage_teacher_precompute import (
     _mock_answer_only_logits_payload,
     _resolve_teacher_logits_mode,
     compute_teacher_forced_answer_logits,
-    create_teacher_logits_dataset,
     create_teacher_precompute_dataset,
 )
 
@@ -24,7 +22,6 @@ __all__ = [
     "INACTIVE_LOGIT",
     "CompletedLogitsRows",
     "DistillationMode",
-    "TeacherLogitsGenerator",
     "_assert_teacher_logits_answer_length",
     "_compact_adaptive_generation_scores",
     "_entropy_to_weight",
@@ -36,6 +33,5 @@ __all__ = [
     "_mock_answer_only_logits_payload",
     "_resolve_teacher_logits_mode",
     "compute_teacher_forced_answer_logits",
-    "create_teacher_logits_dataset",
     "create_teacher_precompute_dataset",
 ]

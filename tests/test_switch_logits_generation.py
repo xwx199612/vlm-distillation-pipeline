@@ -6,7 +6,11 @@ import pytest
 
 from vlm_distill.config_schema import DataConfig, DistillationConfig, PipelineConfig, StudentConfig, TeacherConfig
 from vlm_distill.data_manifest import VlmSample
-from vlm_distill.stage_visual_switch_logits import VisualSwitchDistiller, _validate_switch_logits_row
+from vlm_distill.stage_visual_switch_logits import (
+    VisualSwitchDistiller,
+    _load_switch_base_rows,
+    _validate_switch_logits_row,
+)
 
 
 def _make_config(tmp_path: Path) -> PipelineConfig:
@@ -72,3 +76,28 @@ def test_switch_logits_row_contains_valid_compact_payload(tmp_path: Path):
     )
     assert {"indices", "values", "vocab_size"}.issubset(row["switch_logits"])
     assert row["switch_logits"]["shape"][1] == len(row["teacher_tokens"])
+
+
+def test_switch_logits_reads_teacher_rows_from_label_path(tmp_path: Path):
+    label_path = tmp_path / "labels.jsonl"
+    switch_path = tmp_path / "switch_logits.jsonl"
+    label_path.write_text('{"id":"label-row","teacher_answer":"{}","teacher_tokens":[1]}\n', encoding="utf-8")
+    switch_path.write_text('{"id":"switch-row","teacher_answer":"{}","teacher_tokens":[2]}\n', encoding="utf-8")
+    config = _make_config(tmp_path)
+    config.data.label_path = label_path
+    config.data.switch_logits_path = switch_path
+    config.data.teacher_logits_path = tmp_path / "legacy_teacher_logits.jsonl"
+
+    rows = _load_switch_base_rows(config)
+
+    assert [row["id"] for row in rows] == ["label-row"]
+
+
+def test_switch_logits_does_not_use_switch_logits_as_teacher_base_when_label_missing(tmp_path: Path):
+    switch_path = tmp_path / "switch_logits.jsonl"
+    switch_path.write_text('{"id":"switch-row","teacher_answer":"{}","teacher_tokens":[2]}\n', encoding="utf-8")
+    config = _make_config(tmp_path)
+    config.data.label_path = tmp_path / "missing_labels.jsonl"
+    config.data.switch_logits_path = switch_path
+
+    assert _load_switch_base_rows(config) == []

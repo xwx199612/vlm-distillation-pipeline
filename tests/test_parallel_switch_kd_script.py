@@ -44,7 +44,7 @@ def test_parallel_precompute_script_preserves_switch_kd_method_in_generated_conf
     assert "distillation.teacher_logits={config_data.get('distillation', {}).get('teacher_logits')}" in text
     assert "teacher_logits_field={config_data.get('distillation', {}).get('teacher_logits_field')}" in text
     assert "canonical_teacher_output_path=label_path" in text
-    assert "teacher-logits stage is removed/deprecated" in text
+    assert "teacher-logits" not in text
 
 
 def test_generated_shard_configs_preserve_unified_teacher_precompute_semantics():
@@ -60,7 +60,7 @@ def test_generated_shard_configs_preserve_unified_teacher_precompute_semantics()
 
 
 def test_teacher_logits_resolver_falls_back_to_label_path_when_deprecated_path_absent():
-    from vlm_distill.config_schema import DataConfig, resolve_teacher_logits_path
+    from vlm_distill.config_schema import DataConfig, DistillationConfig, resolve_teacher_logits_path
 
     data = DataConfig(
         manifest_path=Path("manifest.jsonl"),
@@ -69,6 +69,7 @@ def test_teacher_logits_resolver_falls_back_to_label_path_when_deprecated_path_a
     )
 
     assert resolve_teacher_logits_path(data) == Path("labels.jsonl")
+    assert DistillationConfig().teacher_logits is True
 
 
 def test_parallel_precompute_script_validates_teacher_logits_before_merge():
@@ -85,7 +86,7 @@ def test_parallel_precompute_script_removes_teacher_logits_stage_from_main_workf
     assert 'run_stage "label"' in text
     assert 'run_stage "switch-logits"' in text
     assert 'run_stage "teacher-logits"' not in text
-    assert 'label|switch-logits|all)' in text
+    assert 'label|teacher-precompute|switch-logits|all)' in text
     assert "label|teacher-logits|switch-logits|all" not in text
 
 
@@ -126,9 +127,71 @@ distillation:
     assert calls == ["teacher_precompute"]
 
 
+def test_cli_teacher_precompute_uses_unified_teacher_precompute(monkeypatch, tmp_path):
+    import vlm_distill.cli as cli
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+data:
+  manifest_path: manifest.jsonl
+  distill_path: distill.jsonl
+  label_path: labels.jsonl
+teacher:
+  model_name: mock-teacher
+student:
+  model_name: mock-student
+  output_dir: out
+  adapter_dir: adapter
+distillation:
+  method: switch_kd
+  teacher_logits: true
+""".strip(),
+        encoding="utf-8",
+    )
+    calls: list[str] = []
+
+    monkeypatch.setattr(sys, "argv", ["vlm-distill", "teacher-precompute", "--config", str(config_path)])
+    monkeypatch.setattr(cli, "validate_manifest", lambda *args, **kwargs: ["sample"])
+    monkeypatch.setattr(
+        cli,
+        "create_teacher_precompute_dataset",
+        lambda config, samples: calls.append("teacher_precompute") or tmp_path / "labels.jsonl",
+    )
+
+    cli.main()
+
+    assert calls == ["teacher_precompute"]
+
+
+def test_cli_teacher_logits_is_not_a_compute_command(monkeypatch, tmp_path):
+    import vlm_distill.cli as cli
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("data: {}\n", encoding="utf-8")
+    calls: list[str] = []
+
+    monkeypatch.setattr(sys, "argv", ["vlm-distill", "teacher-logits", "--config", str(config_path)])
+    monkeypatch.setattr(
+        cli,
+        "create_teacher_precompute_dataset",
+        lambda *args, **kwargs: calls.append("teacher_precompute"),
+    )
+
+    try:
+        cli.main()
+    except SystemExit as exc:
+        assert exc.code != 0
+    else:  # pragma: no cover - argparse must reject the removed command
+        raise AssertionError("teacher-logits command unexpectedly succeeded")
+
+    assert calls == []
+
+
 def test_cli_no_longer_imports_old_label_generation_flow():
     text = Path("src/vlm_distill/cli.py").read_text(encoding="utf-8")
 
+    assert Path("src/vlm_distill/stage_teacher_precompute.py").exists()
     assert "stage_teacher_precompute import create_teacher_precompute_dataset" in text
     assert "stage_answer_labeling import create_distillation_dataset" not in text
     assert '"teacher-logits",' not in text
@@ -146,3 +209,11 @@ def test_old_teacher_modules_are_wrappers_only():
         assert "class TeacherLogitsGenerator" not in text
         assert "def create_teacher_precompute_dataset" not in text
         assert "def create_distillation_dataset" not in text
+        assert "create_teacher_logits_dataset" not in text
+
+
+def test_no_independent_teacher_logits_dataset_path_remains():
+    for path in Path("src/vlm_distill").glob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        assert "def create_teacher_logits_dataset" not in text
+        assert "create_teacher_logits_compat_dataset" not in text

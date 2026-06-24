@@ -637,6 +637,10 @@ def create_visual_switch_dataset(config: PipelineConfig) -> Path:
                     f"prompt-plus-answer sequence can be cached. id={sample.id}, image={sample.image}, "
                     f"row_keys={sorted(row.keys())}"
                 )
+            _validate_unified_teacher_base_row(
+                row,
+                require_logits=bool(config.distillation.teacher_logits),
+            )
             if use_student_visual_cache and not distiller._is_mock_mode():
                 cache_path = _student_visual_cache_path(cache_dir, sample)
                 row.update(distiller.generate_for_sample_from_visual_cache(sample, cache_path, base_row=row))
@@ -805,18 +809,21 @@ def _nested_shape(value: Any) -> tuple[int, ...]:
 
 
 def _load_switch_base_rows(config: PipelineConfig) -> list[dict[str, Any]]:
-    candidate_paths = (
-        resolve_label_path(config.data),
-        resolve_switch_logits_path(config.data),
-    )
-    seen: set[Path] = set()
-    for path in candidate_paths:
-        if path in seen:
-            continue
-        seen.add(path)
-        if path.exists():
-            return read_jsonl(path)
+    path = resolve_label_path(config.data)
+    if path.exists():
+        return read_jsonl(path)
     return []
+
+
+def _validate_unified_teacher_base_row(row: dict[str, Any], *, require_logits: bool) -> None:
+    from .label_validation import validate_teacher_row
+
+    valid, reason = validate_teacher_row(row, require_logits=require_logits)
+    if not valid:
+        raise ValueError(
+            "Switch logits generation requires a schema-valid unified teacher row "
+            f"from data.label_path. id={row.get('id')}, reason={reason}, row_keys={sorted(row.keys())}"
+        )
 
 
 def _student_visual_cache_dir(config: PipelineConfig, output_path: Path) -> Path:

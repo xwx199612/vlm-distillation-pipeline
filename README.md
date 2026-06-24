@@ -140,13 +140,15 @@ vlm-distill validate-labels \
   --config configs/parsing_response_distillation.yaml
 ```
 
-This reads `data.distill_path` and reports:
+This reads the canonical teacher output at `data.label_path` and reports:
 
 - `total_rows`
 - `valid teacher_answer rows`
 - `schema-valid rows`
+- `string-list rows`
 - `answer/token mismatch rows`
 - `rows with valid teacher_logits` when `distillation.teacher_logits: true`
+- `answer/logits length mismatch rows`
 
 ---
 
@@ -162,7 +164,7 @@ vlm-distill label \
 `teacher_answer`, `teacher_tokens`, and answer-only `teacher_logits` from the
 same final normalized answer to `data.label_path`. `data.label_path` is the
 canonical teacher precompute output. `data.teacher_logits_path` is deprecated
-and should only appear in legacy configs that need a compatibility backfill.
+and is not used by the main Switch-KD workflow.
 
 Use `vlm-distill teacher-precompute --config ...` for the same stage with an
 explicit name.
@@ -704,30 +706,32 @@ Notes for Qwen2.5-VL:
 
 Switch-KD training pipeline:
 
-```powershell
-vlm-distill validate-manifest \
-  --config configs/switch_kd_4060ti.yaml
-
-vlm-distill label \
-  --config configs/switch_kd_4060ti.yaml
-
-vlm-distill validate-labels \
-  --config configs/switch_kd_4060ti.yaml
-
-vlm-distill switch-logits \
-  --config configs/switch_kd_4060ti.yaml
-
-vlm-distill train \
-  --config configs/switch_kd_4060ti.yaml
-
-vlm-distill evaluate \
-  --config configs/switch_kd_4060ti.yaml
+```bash
+python -m vlm_distill.cli label --config configs/parsing_switch_kd.yaml
+python -m vlm_distill.cli validate-labels --config configs/parsing_switch_kd.yaml
+python -m vlm_distill.cli switch-logits --config configs/parsing_switch_kd.yaml
+python -m vlm_distill.cli train --config configs/parsing_switch_kd.yaml
 ```
 
 For Switch-KD, use `label` or `teacher-precompute`, followed by `switch-logits`
 and `train`. `distillation.teacher_logits: true` means teacher logits are
 generated during `label`/`teacher-precompute` into `data.label_path`, the
 canonical unified teacher output.
+
+4-GPU precompute:
+
+```bash
+bash scripts/run_parallel_switch_kd_precompute_4gpu.sh --clean-outputs label
+bash scripts/run_parallel_switch_kd_precompute_4gpu.sh --clean-outputs switch-logits
+```
+
+Or:
+
+```bash
+bash scripts/run_parallel_switch_kd_precompute_4gpu.sh --clean-outputs all
+```
+
+Here `all` means `label` then `switch-logits`.
 
 Training objective:
 

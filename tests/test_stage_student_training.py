@@ -7,7 +7,11 @@ import pytest
 
 from vlm_distill.config_schema import DataConfig, PipelineConfig, StudentConfig, TeacherConfig
 from vlm_distill.config_schema import DistillationConfig
-from vlm_distill.stage_student_training import _load_student_model, _validate_switch_kd_training_rows
+from vlm_distill.stage_student_training import (
+    _load_student_model,
+    _training_data_paths,
+    _validate_switch_kd_training_rows,
+)
 
 
 class _DummyModel:
@@ -170,3 +174,14 @@ def test_switch_kd_training_valid_logits_pass_dataset_validation(tmp_path: Path)
     ]
 
     _validate_switch_kd_training_rows(_switch_kd_config(tmp_path), rows)
+
+
+def test_switch_kd_training_paths_ignore_legacy_teacher_logits_path(tmp_path: Path):
+    config = _switch_kd_config(tmp_path)
+    config.data.label_path = tmp_path / "labels.jsonl"
+    config.data.teacher_logits_path = tmp_path / "legacy_teacher_logits.jsonl"
+
+    assert _training_data_paths(config) == [
+        tmp_path / "labels.jsonl",
+        tmp_path / "switch_logits.jsonl",
+    ]

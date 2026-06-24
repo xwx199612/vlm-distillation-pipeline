@@ -1090,7 +1090,7 @@ class TeacherLogitsGenerator:
 
         if self.config.teacher.backend != "hf":
             raise ValueError(
-                "teacher-logits currently supports backend='hf' or backend='mock'. "
+                "teacher precompute logits currently supports backend='hf' or backend='mock'. "
                 f"Got backend={self.config.teacher.backend!r}."
             )
 
@@ -1496,34 +1496,6 @@ def create_distillation_dataset(config: PipelineConfig, samples: list[VlmSample]
     return create_teacher_precompute_dataset(config, samples)
 
 
-def create_teacher_logits_compat_dataset(config: PipelineConfig) -> Path:
-    """Compatibility path: fill teacher_logits for existing valid teacher labels."""
-    from .label_validation import build_teacher_token_decoder, validate_teacher_row
-    label_path = resolve_label_path(config.data)
-    output_path = resolve_label_path(config.data)
-    decoder = build_teacher_token_decoder(config)
-    rows = read_jsonl(label_path)
-    valid_rows = []
-    for row in rows:
-        valid, reason = validate_teacher_row(row, require_logits=False, decode_tokens=decoder)
-        if not valid:
-            raise ValueError(f"Cannot fill teacher_logits for invalid teacher label id={row.get('id')}: {reason}")
-        if validate_teacher_row(row, require_logits=True, decode_tokens=decoder)[0]:
-            valid_rows.append(row)
-            continue
-        sample = VlmSample(**{key: row.get(key) for key in VlmSample.__dataclass_fields__ if key in row})
-        valid_rows.append(_fill_logits_for_existing_row(config, sample, row))
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8") as handle:
-        for row in valid_rows:
-            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-    if output_path != label_path:
-        with label_path.open("w", encoding="utf-8") as handle:
-            for row in valid_rows:
-                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-    return output_path
-
-
 def _generate_label_with_optional_mock_logits(
     config: PipelineConfig,
     teacher: Any,
@@ -1548,37 +1520,6 @@ def _generate_label_with_optional_mock_logits(
     if include_logits:
         row.update(_mock_answer_only_logits_payload(config, len(tokens), source="teacher_forcing_forward"))
     return row
-
-
-def _fill_logits_for_existing_row(
-    config: PipelineConfig,
-    sample: VlmSample,
-    row: dict[str, Any],
-) -> dict[str, Any]:
-    if config.teacher.backend == "hf":
-        generator = TeacherLogitsGenerator(config)
-        generator.load()
-        image_path = config.data.image_root / sample.image
-        image = _load_teacher_image(image_path, config.teacher.image_resize)
-        prompt = _format_prompt(config, sample)
-        logits_payload = compute_teacher_forced_answer_logits(
-            image=image,
-            prompt=prompt,
-            teacher_answer=str(row["teacher_answer"]),
-            teacher_tokens=[int(token_id) for token_id in row["teacher_tokens"]],
-            model=generator._model,
-            processor=generator._processor,
-            config=config,
-        )
-    else:
-        logits_payload = _mock_answer_only_logits_payload(
-            config,
-            len([int(token_id) for token_id in row["teacher_tokens"]]),
-            source="teacher_forcing_forward",
-        )
-    updated = dict(row)
-    updated.update(logits_payload)
-    return updated
 
 
 def _mock_answer_only_logits_payload(config: PipelineConfig, answer_len: int, *, source: str) -> dict[str, Any]:
@@ -1744,18 +1685,6 @@ def _rewrite_valid_teacher_rows(path: Path, *, config: PipelineConfig, require_l
     print(f"[teacher-precompute] pruned invalid existing rows from {path}; remaining_valid_rows={len(valid_rows)}")
 
 
-def create_teacher_logits_dataset(config: PipelineConfig) -> Path:
-    """
-    Compatibility alias.
-
-    Fill or regenerate teacher_logits for existing valid teacher labels without
-    independently generating a new teacher_answer.
-    """
-    print("[teacher-logits] compatibility mode: filling logits for existing teacher labels.")
-    return create_teacher_logits_compat_dataset(config)
-
-
-
 def _load_completed_ids(
     path: Path,
     *,
@@ -1794,7 +1723,7 @@ def _rewrite_valid_completed_rows(path: Path, *, field_name: str) -> None:
         for row in valid_rows:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     print(
-        f"[teacher-logits] pruned invalid existing rows from {path}; "
+        f"[teacher-precompute] pruned invalid existing logits rows from {path}; "
         f"remaining_valid_rows={len(valid_rows)}"
     )
 
