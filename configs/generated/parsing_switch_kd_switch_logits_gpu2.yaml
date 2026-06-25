@@ -8,7 +8,7 @@ data:
   manifest_path: outputs/switch-kd/shards/parsing_manifest_shard2.jsonl
   distill_path: outputs/switch-kd/{task_name}_switch_kd_{response_profile}.jsonl
   label_path: outputs/switch-kd/shards/parsing_teacher_labels_shard2.jsonl
-  switch_logits_path: outputs/switch-kd/{task_name}_switch_logits_{response_profile}.jsonl
+  switch_logits_path: outputs/switch-kd/shards/parsing_switch_logits_shard2.jsonl
   eval_path: outputs/switch-kd/{task_name}_switch_kd_{response_profile}.jsonl
   image_dir: /home/phison/vlm_distill/TV_data
   image_root: .
@@ -202,6 +202,11 @@ distillation:
   vsd_loss_weight: 0.5
   kd_temperature: 2.0
   dbild_top_k: 64
+  dbild_top_k_mode: kneedle
+  dbild_kneedle_candidate_k: 256
+  dbild_min_top_k: 4
+  dbild_max_top_k: 128
+  dbild_kl_mode: reverse
   dbild_min_prob: 0.0
   teacher_logits_field: teacher_logits
   switch_logits_field: switch_logits
@@ -213,7 +218,7 @@ distillation:
   teacher_token_embedding_path: model.language_model.embed_tokens
   teacher_lm_head_path: lm_head
   switch_cache_student_visual: true
-  student_visual_cache_dir: outputs/switch-kd/student_visual_cache
+  student_visual_cache_dir: outputs/switch-kd/shards/student_visual_cache_shard2
   keep_student_visual_cache_on_cpu: true
   visual_token_placeholder: <|image_pad|>
   max_cached_logits_vocab: 4096

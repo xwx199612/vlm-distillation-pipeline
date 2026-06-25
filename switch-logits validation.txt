@@ -1,0 +1,244 @@
+python - <<'PY'
+import json
+import math
+from pathlib import Path
+from collections import Counter
+
+switch_path = Path("outputs/switch-kd/parsing_switch_logits_480p_8bit_student_4bit.jsonl")
+manifest_path = Path("outputs/switch-kd/parsing_manifest.jsonl")
+teacher_path = Path("outputs/switch-kd/parsing_teacher_labels_480p_8bit.jsonl")
+
+required_payload_keys = {"indices", "values", "shape", "vocab_size"}
+
+def read_jsonl(path):
+    rows = []
+    with path.open("r", encoding="utf-8") as f:
+        for line_no, line in enumerate(f, start=1):
+            if line.strip():
+                row = json.loads(line)
+                row["_line_no"] = line_no
+                rows.append(row)
+    return rows
+
+def nested_shape(x):
+    if not isinstance(x, list):
+        return ()
+    if not x:
+        return (0,)
+    first = nested_shape(x[0])
+    for item in x[1:]:
+        if nested_shape(item) != first:
+            return ("ragged",)
+    return (len(x), *first)
+
+def unwrap_batch_3d(x):
+    # [1, T, K] -> [T, K]
+    if (
+        isinstance(x, list)
+        and len(x) == 1
+        and isinstance(x[0], list)
+        and x[0]
+        and isinstance(x[0][0], list)
+    ):
+        return x[0]
+    return x
+
+def unwrap_batch_2d(x):
+    # [1, T] -> [T]
+    if (
+        isinstance(x, list)
+        and len(x) == 1
+        and isinstance(x[0], list)
+        and (not x[0] or not isinstance(x[0][0], list))
+    ):
+        return x[0]
+    return x
+
+def finite_nested_count(x):
+    total = 0
+    bad = 0
+    stack = [x]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, list):
+            stack.extend(item)
+        else:
+            total += 1
+            if not isinstance(item, (int, float)) or not math.isfinite(item):
+                bad += 1
+    return total, bad
+
+switch_rows = read_jsonl(switch_path)
+manifest_rows = read_jsonl(manifest_path)
+teacher_rows = read_jsonl(teacher_path)
+
+errors = []
+warnings = []
+ids = []
+
+for row in switch_rows:
+    rid = row.get("id")
+    ids.append(rid)
+
+    if "teacher_tokens" not in row:
+        errors.append((rid, "missing teacher_tokens"))
+        continue
+
+    if "teacher_logits" not in row:
+        errors.append((rid, "missing teacher_logits"))
+
+    if "switch_logits" not in row:
+        errors.append((rid, "missing switch_logits"))
+        continue
+
+    teacher_tokens = row["teacher_tokens"]
+    payload = row["switch_logits"]
+
+    if not isinstance(teacher_tokens, list):
+        errors.append((rid, "teacher_tokens is not list"))
+        continue
+
+    if not isinstance(payload, dict):
+        errors.append((rid, "switch_logits is not dict"))
+        continue
+
+    missing_keys = sorted(required_payload_keys - set(payload.keys()))
+    if missing_keys:
+        errors.append((rid, f"switch_logits missing keys: {missing_keys}"))
+        continue
+
+    indices = payload["indices"]
+    values = payload["values"]
+    shape = payload["shape"]
+
+    indices_shape = nested_shape(indices)
+    values_shape = nested_shape(values)
+
+    if indices_shape != values_shape:
+        errors.append((rid, f"indices/values shape mismatch: {indices_shape} vs {values_shape}"))
+        continue
+
+    if not isinstance(shape, list) or len(shape) != 3:
+        errors.append((rid, f"bad shape field: {shape}"))
+        continue
+
+    batch_size, seq_len, vocab_size = shape
+
+    if batch_size != 1:
+        warnings.append((rid, f"batch_size is {batch_size}, expected 1"))
+
+    if seq_len != len(teacher_tokens):
+        errors.append((rid, f"shape seq_len {seq_len} != teacher_tokens len {len(teacher_tokens)}"))
+
+    if payload.get("vocab_size") != vocab_size:
+        errors.append((rid, f"vocab_size mismatch: payload={payload.get('vocab_size')} shape={vocab_size}"))
+
+    indices_unwrapped = unwrap_batch_3d(indices)
+    values_unwrapped = unwrap_batch_3d(values)
+
+    if len(indices_unwrapped) != len(teacher_tokens):
+        errors.append((rid, f"indices seq len {len(indices_unwrapped)} != teacher_tokens len {len(teacher_tokens)}"))
+
+    if len(values_unwrapped) != len(teacher_tokens):
+        errors.append((rid, f"values seq len {len(values_unwrapped)} != teacher_tokens len {len(teacher_tokens)}"))
+
+    for t, (idx_row, val_row) in enumerate(zip(indices_unwrapped, values_unwrapped)):
+        if len(idx_row) != len(val_row):
+            errors.append((rid, f"token {t}: k mismatch indices={len(idx_row)} values={len(val_row)}"))
+            break
+
+        if not idx_row:
+            errors.append((rid, f"token {t}: empty top-k row"))
+            break
+
+        if any((not isinstance(i, int)) for i in idx_row):
+            errors.append((rid, f"token {t}: non-int index"))
+            break
+
+        if any(i < 0 or i >= vocab_size for i in idx_row):
+            errors.append((rid, f"token {t}: index out of vocab range"))
+            break
+
+    total_values, bad_values = finite_nested_count(values)
+    if bad_values:
+        errors.append((rid, f"non-finite values: {bad_values}/{total_values}"))
+
+    if payload.get("adaptive") is not True:
+        warnings.append((rid, "adaptive is not true"))
+
+    if payload.get("switch_kd") is not True:
+        warnings.append((rid, "switch_kd is not true"))
+
+    token_k = payload.get("token_k")
+    if token_k is not None:
+        token_k_unwrapped = unwrap_batch_2d(token_k)
+        if len(token_k_unwrapped) != len(teacher_tokens):
+            errors.append((rid, f"token_k len {len(token_k_unwrapped)} != teacher_tokens len {len(teacher_tokens)}"))
+
+        for t, k in enumerate(token_k_unwrapped):
+            if not isinstance(k, int):
+                errors.append((rid, f"token_k[{t}] is not int: {type(k).__name__}"))
+                break
+            if k <= 0:
+                errors.append((rid, f"token_k[{t}] <= 0: {k}"))
+                break
+            if k > len(indices_unwrapped[t]):
+                errors.append((rid, f"token_k[{t}]={k} > stored_k={len(indices_unwrapped[t])}"))
+                break
+
+    for optional_key in ["entropy", "entropy_weight"]:
+        if optional_key in payload:
+            arr = unwrap_batch_2d(payload[optional_key])
+            if len(arr) != len(teacher_tokens):
+                errors.append((rid, f"{optional_key} len {len(arr)} != teacher_tokens len {len(teacher_tokens)}"))
+
+# id-level checks
+dup_ids = [k for k, v in Counter(ids).items() if v > 1]
+
+manifest_ids = {r["id"] for r in manifest_rows}
+teacher_ids = {r["id"] for r in teacher_rows}
+switch_ids = set(ids)
+
+missing_from_manifest = sorted(manifest_ids - switch_ids)
+extra_vs_manifest = sorted(switch_ids - manifest_ids)
+missing_from_teacher = sorted(teacher_ids - switch_ids)
+extra_vs_teacher = sorted(switch_ids - teacher_ids)
+
+print("=== switch logits validation ===")
+print("manifest_rows:", len(manifest_rows))
+print("teacher_rows:", len(teacher_rows))
+print("switch_rows:", len(switch_rows))
+print("duplicate_switch_ids:", len(dup_ids))
+print("missing_vs_manifest:", len(missing_from_manifest))
+print("extra_vs_manifest:", len(extra_vs_manifest))
+print("missing_vs_teacher:", len(missing_from_teacher))
+print("extra_vs_teacher:", len(extra_vs_teacher))
+print("errors:", len(errors))
+print("warnings:", len(warnings))
+
+if dup_ids[:5]:
+    print("duplicate examples:", dup_ids[:5])
+if missing_from_manifest[:5]:
+    print("missing_vs_manifest examples:", missing_from_manifest[:5])
+if extra_vs_manifest[:5]:
+    print("extra_vs_manifest examples:", extra_vs_manifest[:5])
+if errors[:10]:
+    print("error examples:")
+    for e in errors[:10]:
+        print(" ", e)
+if warnings[:10]:
+    print("warning examples:")
+    for w in warnings[:10]:
+        print(" ", w)
+
+raise SystemExit(
+    1 if (
+        errors
+        or dup_ids
+        or missing_from_manifest
+        or extra_vs_manifest
+        or missing_from_teacher
+        or extra_vs_teacher
+    ) else 0
+)
+PY
