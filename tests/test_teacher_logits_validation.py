@@ -276,6 +276,8 @@ def test_validate_teacher_cli_works(monkeypatch, tmp_path: Path, capsys: pytest.
 
     output = capsys.readouterr().out
     assert "OK validated teacher output path=" in output
+    assert "token_identity_match_rows=1" in output
+    assert "token_identity_mismatch_rows=0" in output
     assert "invalid_rows=0" in output
 
 

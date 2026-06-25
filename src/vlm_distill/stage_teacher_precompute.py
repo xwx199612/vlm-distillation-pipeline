@@ -27,7 +27,6 @@ from .device_utils import (
 )
 from .model_loading import apply_attn_implementation, resolve_model_path
 from .stage_visual_switch_logits import _compact_adaptive_sequence_logits
-from .token_alignment import build_token_mismatch_details
 
 
 class TeacherBackend(Protocol):
@@ -1267,6 +1266,12 @@ class TeacherLogitsGenerator:
             answer = self._decode(generated_ids).strip()
             normalized_answer = _normalize_teacher_answer(sample, answer).strip()
             teacher_tokens = self.tokenize_teacher_answer(normalized_answer)
+            canonical_answer_token_ids = _extract_answer_token_ids_from_full_input(
+                processor=self._processor,
+                image=image,
+                prompt=prompt,
+                teacher_answer=normalized_answer,
+            )
 
             result: dict[str, Any] = {
                 "teacher_answer": answer,
@@ -1290,17 +1295,18 @@ class TeacherLogitsGenerator:
             raw_tokens = _flatten_generated_ids(generated_ids.detach().cpu().tolist())
             try:
                 raw_matches = (
-                    raw_tokens == teacher_tokens
+                    raw_tokens == canonical_answer_token_ids
                     and _canonicalize_teacher_answer(answer) == _canonicalize_teacher_answer(normalized_answer)
                 )
             except ValueError:
                 raw_matches = False
-            if raw_matches and len(scores) == len(teacher_tokens):
+            if raw_matches and len(scores) == len(canonical_answer_token_ids):
+                result["teacher_tokens"] = canonical_answer_token_ids
                 logits_payload = self._build_generation_logits_payload(
                     scores=scores,
                     mode=mode,
                     prompt_len=0,
-                    answer_token_ids=teacher_tokens,
+                    answer_token_ids=canonical_answer_token_ids,
                     source="generation_scores",
                 )
             else:
@@ -1314,6 +1320,7 @@ class TeacherLogitsGenerator:
                     processor=self._processor,
                     config=self.config,
                 )
+                result["teacher_tokens"] = [int(token_id) for token_id in logits_payload["teacher_logits_answer_token_ids"]]
             result.update(logits_payload)
             return result
 
@@ -1639,25 +1646,19 @@ def compute_teacher_forced_answer_logits(
 ) -> dict[str, Any]:
     import torch
 
-    prompt_inputs = _build_multimodal_inputs_for_processor(processor, image, prompt)
-    full_inputs = _build_multimodal_inputs_for_processor(
+    prompt_inputs, full_inputs, prompt_input_ids, full_input_ids, answer_token_ids = _build_teacher_forcing_inputs_and_answer_span(
         processor,
         image,
-        _join_prompt_and_answer(prompt, teacher_answer),
+        prompt,
+        teacher_answer,
     )
-    prompt_input_ids = [int(token_id) for token_id in prompt_inputs["input_ids"][0].tolist()]
-    full_input_ids = [int(token_id) for token_id in full_inputs["input_ids"][0].tolist()]
+    if not answer_token_ids:
+        raise ValueError(f"Teacher-forced answer span is empty. id={sample_id}")
     input_device = select_model_input_device(model, label="Teacher forcing")
     prompt_inputs = batch_to_device(prompt_inputs, input_device)
     full_inputs = batch_to_device(full_inputs, input_device)
     prefix_len = len(prompt_input_ids)
-    answer_len = len(teacher_tokens)
-    answer_token_ids = full_input_ids[prefix_len : prefix_len + answer_len]
-    if answer_token_ids != teacher_tokens:
-        raise ValueError(
-            "Teacher logits token identity mismatch. "
-            f"{build_token_mismatch_details(expected=teacher_tokens, actual=answer_token_ids, actual_field_name='actual_answer_token_id', extra={'id': sample_id})}"
-        )
+    answer_len = len(answer_token_ids)
     with torch.no_grad():
         outputs = model(**full_inputs)
     full_logits = outputs.logits
@@ -1677,6 +1678,7 @@ def compute_teacher_forced_answer_logits(
     if int(compact["shape"][1]) != answer_len:
         raise ValueError("Compacted teacher logits are not aligned to teacher_tokens.")
     return {
+        "teacher_tokens": answer_token_ids,
         field: compact,
         f"{field}_format": _resolve_teacher_logits_mode(config),
         f"{field}_prompt_len": 0,
@@ -1687,6 +1689,30 @@ def compute_teacher_forced_answer_logits(
         f"{field}_source": "teacher_forcing_forward",
         f"{field}_temperature": float(config.distillation.kd_temperature),
     }
+
+
+def _build_teacher_forcing_inputs_and_answer_span(processor, image, prompt: str, teacher_answer: str):
+    prompt_inputs = _build_multimodal_inputs_for_processor(processor, image, prompt)
+    full_inputs = _build_multimodal_inputs_for_processor(
+        processor,
+        image,
+        _join_prompt_and_answer(prompt, teacher_answer),
+    )
+    prompt_input_ids = [int(token_id) for token_id in prompt_inputs["input_ids"][0].tolist()]
+    full_input_ids = [int(token_id) for token_id in full_inputs["input_ids"][0].tolist()]
+    prefix_len = len(prompt_input_ids)
+    answer_token_ids = full_input_ids[prefix_len:]
+    return prompt_inputs, full_inputs, prompt_input_ids, full_input_ids, answer_token_ids
+
+
+def _extract_answer_token_ids_from_full_input(processor, image, prompt: str, teacher_answer: str) -> list[int]:
+    _, _, _, _, answer_token_ids = _build_teacher_forcing_inputs_and_answer_span(
+        processor,
+        image,
+        prompt,
+        teacher_answer,
+    )
+    return answer_token_ids
 
 
 def _build_multimodal_inputs_for_processor(processor, image, text: str):

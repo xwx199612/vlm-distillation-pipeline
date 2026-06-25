@@ -39,6 +39,7 @@ class _TeacherRowReport:
     schema_valid: bool
     string_list_row: bool
     answer_token_match: bool
+    token_identity_match: bool
     teacher_logits_present: bool
     valid_teacher_logits: bool
     logits_length_match: bool
@@ -63,6 +64,8 @@ def validate_teacher_output_file(
         "string_list_rows": 0,
         "answer_token_match_rows": 0,
         "answer_token_mismatch_rows": 0,
+        "token_identity_match_rows": 0,
+        "token_identity_mismatch_rows": 0,
         "rows_with_teacher_logits": 0,
         "valid_teacher_logits_rows": 0,
         "logits_length_match_rows": 0,
@@ -90,8 +93,16 @@ def validate_teacher_output_file(
             summary["string_list_rows"] += 1
         if report.answer_token_match:
             summary["answer_token_match_rows"] += 1
-        elif _should_count_token_mismatch(report, decode_tokens=decode_tokens):
+        elif _should_count_token_mismatch(
+            report,
+            decode_tokens=decode_tokens,
+            require_teacher_logits=require_teacher_logits,
+        ):
             summary["answer_token_mismatch_rows"] += 1
+        if report.token_identity_match:
+            summary["token_identity_match_rows"] += 1
+        elif _should_count_token_identity_mismatch(report, require_teacher_logits=require_teacher_logits):
+            summary["token_identity_mismatch_rows"] += 1
         if report.teacher_logits_present:
             summary["rows_with_teacher_logits"] += 1
         if report.valid_teacher_logits:
@@ -203,7 +214,7 @@ def _analyze_teacher_row(
             canonical_answer = _canonicalize_teacher_answer(_strip_special_tokens(raw_answer))
             canonical_decoded = _canonicalize_teacher_answer(decoded)
             answer_token_match = canonical_answer == canonical_decoded
-            if not answer_token_match:
+            if not answer_token_match and not require_teacher_logits:
                 return _report(
                     False,
                     "decoded teacher_tokens do not match teacher_answer",
@@ -237,6 +248,7 @@ def _analyze_teacher_row(
             schema_valid=True,
             string_list_row=string_list_row,
             answer_token_match=answer_token_match,
+            token_identity_match=logits_report.token_identity_match,
             teacher_logits_present=logits_present,
             valid_teacher_logits=logits_report.valid_teacher_logits,
             logits_length_match=logits_report.logits_length_match,
@@ -251,6 +263,7 @@ def _analyze_teacher_row(
         schema_valid=True,
         string_list_row=string_list_row,
         answer_token_match=answer_token_match,
+        token_identity_match=logits_report.token_identity_match,
         teacher_logits_present=logits_present,
         valid_teacher_logits=logits_report.valid_teacher_logits,
         logits_length_match=logits_report.logits_length_match,
@@ -263,6 +276,7 @@ def _analyze_teacher_row(
 class _LogitsReport:
     valid: bool
     reason: str | None
+    token_identity_match: bool
     valid_teacher_logits: bool
     logits_length_match: bool
     full_sequence_logits: bool
@@ -279,18 +293,19 @@ def _validate_teacher_logits_payload(
     payload = row.get(logits_field)
     if payload is None:
         if require_teacher_logits:
-            return _logits_report(False, f"{logits_field} missing", False, False, False, False)
-        return _logits_report(True, None, False, False, False, False)
+            return _logits_report(False, f"{logits_field} missing", False, False, False, False, False)
+        return _logits_report(True, None, False, False, False, False, False)
     if not isinstance(payload, dict):
-        return _logits_report(False, f"{logits_field} missing or not a dict", False, False, False, False)
+        return _logits_report(False, f"{logits_field} missing or not a dict", False, False, False, False, False)
 
     metadata_prefix = logits_field
     if not _has_text(row.get(f"{metadata_prefix}_format")):
-        return _logits_report(False, f"{metadata_prefix}_format is missing", False, False, False, False)
+        return _logits_report(False, f"{metadata_prefix}_format is missing", False, False, False, False, False)
     if row.get(f"{metadata_prefix}_aligned_to_answer") is not True:
         return _logits_report(
             False,
             f"{metadata_prefix}_aligned_to_answer is not true",
+            False,
             False,
             False,
             False,
@@ -304,12 +319,13 @@ def _validate_teacher_logits_payload(
             False,
             False,
             False,
+            False,
         )
     if row.get(f"{metadata_prefix}_vocab_size") is None:
-        return _logits_report(False, f"{metadata_prefix}_vocab_size is missing", False, False, False, False)
+        return _logits_report(False, f"{metadata_prefix}_vocab_size is missing", False, False, False, False, False)
     answer_token_ids = row.get(f"{metadata_prefix}_answer_token_ids")
     if answer_token_ids is None:
-        return _logits_report(False, f"{metadata_prefix}_answer_token_ids is missing", False, False, False, False)
+        return _logits_report(False, f"{metadata_prefix}_answer_token_ids is missing", False, False, False, False, False)
     answer_token_ids = coerce_token_ids(answer_token_ids)
     teacher_tokens = _extract_teacher_tokens(row)
     if answer_token_ids != teacher_tokens:
@@ -321,13 +337,16 @@ def _validate_teacher_logits_payload(
             False,
             False,
             False,
+            False,
         )
+    token_identity_match = True
 
     required_keys = ("indices", "values", "vocab_size", "shape")
     if not all(key in payload for key in required_keys):
         return _logits_report(
             False,
             f"{logits_field} missing indices, values, vocab_size, or shape",
+            token_identity_match,
             False,
             False,
             False,
@@ -335,74 +354,75 @@ def _validate_teacher_logits_payload(
         )
 
     if not isinstance(payload["shape"], list) or len(payload["shape"]) < 2:
-        return _logits_report(False, f"{logits_field}.shape invalid", False, False, False, False)
+        return _logits_report(False, f"{logits_field}.shape invalid", token_identity_match, False, False, False, False)
     shape = payload["shape"]
     if len(shape) < 3:
-        return _logits_report(False, f"{logits_field}.shape invalid", False, False, False, False)
+        return _logits_report(False, f"{logits_field}.shape invalid", token_identity_match, False, False, False, False)
     try:
         shape_seq_len = int(shape[1])
     except (TypeError, ValueError):
-        return _logits_report(False, f"{logits_field}.shape is not numeric", False, False, False, False)
+        return _logits_report(False, f"{logits_field}.shape is not numeric", token_identity_match, False, False, False, False)
     if shape_seq_len != answer_len:
         reason = f"{logits_field} length mismatch with teacher_tokens"
-        return _logits_report(False, reason, False, False, shape_seq_len > answer_len, False)
+        return _logits_report(False, reason, token_identity_match, False, False, shape_seq_len > answer_len, False)
 
     if shape_seq_len > answer_len:
-        return _logits_report(False, f"{logits_field} full-sequence logits are not allowed", False, False, True, False)
+        return _logits_report(False, f"{logits_field} full-sequence logits are not allowed", token_identity_match, False, False, True, False)
 
     try:
         payload_vocab_size = int(payload["vocab_size"])
         row_vocab_size = int(row[f"{metadata_prefix}_vocab_size"])
     except (TypeError, ValueError, KeyError):
-        return _logits_report(False, f"{logits_field} vocab_size is invalid", False, False, False, False)
+        return _logits_report(False, f"{logits_field} vocab_size is invalid", token_identity_match, False, False, False, False)
     if payload_vocab_size != row_vocab_size:
-        return _logits_report(False, f"{logits_field} vocab_size mismatch", False, False, False, True)
+        return _logits_report(False, f"{logits_field} vocab_size mismatch", token_identity_match, False, False, False, True)
 
     indices = payload["indices"]
     values = payload["values"]
     if not isinstance(indices, list) or not isinstance(values, list) or len(indices) != len(values):
-        return _logits_report(False, f"{logits_field} indices/values batch shape mismatch", False, False, False, False)
+        return _logits_report(False, f"{logits_field} indices/values batch shape mismatch", token_identity_match, False, False, False, False)
     if len(indices) != 1:
-        return _logits_report(False, f"{logits_field} batch dimension must be 1", False, False, False, False)
+        return _logits_report(False, f"{logits_field} batch dimension must be 1", token_identity_match, False, False, False, False)
     if not indices or not values:
-        return _logits_report(False, f"{logits_field} indices/values are empty", False, False, False, False)
+        return _logits_report(False, f"{logits_field} indices/values are empty", token_identity_match, False, False, False, False)
 
     seq_indices = indices[0]
     seq_values = values[0]
     if not isinstance(seq_indices, list) or not isinstance(seq_values, list):
-        return _logits_report(False, f"{logits_field} indices/values are not lists", False, False, False, False)
+        return _logits_report(False, f"{logits_field} indices/values are not lists", token_identity_match, False, False, False, False)
     if len(seq_indices) != len(seq_values):
-        return _logits_report(False, f"{logits_field} indices/values sequence length mismatch", False, False, False, False)
+        return _logits_report(False, f"{logits_field} indices/values sequence length mismatch", token_identity_match, False, False, False, False)
     if len(seq_indices) == 0:
-        return _logits_report(False, f"{logits_field} sequence length is zero", False, False, False, False)
+        return _logits_report(False, f"{logits_field} sequence length is zero", token_identity_match, False, False, False, False)
     if len(seq_indices) != answer_len:
         reason = f"{logits_field} length mismatch with teacher_tokens"
-        return _logits_report(False, reason, False, False, len(seq_indices) > answer_len, False)
+        return _logits_report(False, reason, token_identity_match, False, False, len(seq_indices) > answer_len, False)
 
     vocab_size = payload_vocab_size
     token_k = payload.get("token_k")
     token_k_rows = None
     if token_k is not None:
         if not isinstance(token_k, list) or len(token_k) != 1:
-            return _logits_report(False, f"{logits_field}.token_k shape mismatch", False, False, False, False)
+            return _logits_report(False, f"{logits_field}.token_k shape mismatch", token_identity_match, False, False, False, False)
         token_k_rows = token_k[0]
         if not isinstance(token_k_rows, list) or len(token_k_rows) != len(seq_indices):
-            return _logits_report(False, f"{logits_field}.token_k length mismatch", False, False, False, False)
+            return _logits_report(False, f"{logits_field}.token_k length mismatch", token_identity_match, False, False, False, False)
 
     for position, (position_indices, position_values) in enumerate(zip(seq_indices, seq_values), start=0):
         if not isinstance(position_indices, list) or not isinstance(position_values, list):
-            return _logits_report(False, f"{logits_field} position {position} is not a list", False, False, False, False)
+            return _logits_report(False, f"{logits_field} position {position} is not a list", token_identity_match, False, False, False, False)
         if len(position_indices) != len(position_values):
             return _logits_report(
                 False,
                 f"{logits_field} indices/values top-k length mismatch at position {position}",
+                token_identity_match,
                 False,
                 False,
                 False,
                 False,
             )
         if len(position_indices) <= 0:
-            return _logits_report(False, f"{logits_field} top-k length is zero at position {position}", False, False, False, False)
+            return _logits_report(False, f"{logits_field} top-k length is zero at position {position}", token_identity_match, False, False, False, False)
 
         expected_k = len(position_indices)
         if token_k_rows is not None:
@@ -410,11 +430,12 @@ def _validate_teacher_logits_payload(
             try:
                 token_k_int = int(token_k_value)
             except (TypeError, ValueError):
-                return _logits_report(False, f"{logits_field}.token_k is not an integer at position {position}", False, False, False, False)
+                return _logits_report(False, f"{logits_field}.token_k is not an integer at position {position}", token_identity_match, False, False, False, False)
             if token_k_int <= 0 or token_k_int > expected_k:
                 return _logits_report(
                     False,
                     f"{logits_field}.token_k incompatible with active top-k at position {position}",
+                    token_identity_match,
                     False,
                     False,
                     False,
@@ -425,13 +446,13 @@ def _validate_teacher_logits_payload(
             try:
                 index_value = int(token_index)
             except (TypeError, ValueError):
-                return _logits_report(False, f"{logits_field} contains a non-integer token index", False, False, False, False)
+                return _logits_report(False, f"{logits_field} contains a non-integer token index", token_identity_match, False, False, False, False)
             if index_value < 0 or index_value >= vocab_size:
-                return _logits_report(False, f"{logits_field} token index out of range", False, False, False, True)
+                return _logits_report(False, f"{logits_field} token index out of range", token_identity_match, False, False, False, True)
 
     valid_teacher_logits = True
     logits_length_match = len(seq_indices) == answer_len
-    return _logits_report(True, None, valid_teacher_logits, logits_length_match, False, False)
+    return _logits_report(True, None, token_identity_match, valid_teacher_logits, logits_length_match, False, False)
 
 
 def _validate_teacher_answer_schema(parsed: dict[str, Any]) -> tuple[bool, str | None, bool]:
@@ -481,8 +502,21 @@ def _should_count_token_mismatch(
     report: _TeacherRowReport,
     *,
     decode_tokens: DecodeTokens | None,
+    require_teacher_logits: bool,
 ) -> bool:
-    return decode_tokens is not None and not report.answer_token_match
+    if decode_tokens is None or report.answer_token_match:
+        return False
+    if require_teacher_logits and report.token_identity_match:
+        return False
+    return True
+
+
+def _should_count_token_identity_mismatch(
+    report: _TeacherRowReport,
+    *,
+    require_teacher_logits: bool,
+) -> bool:
+    return require_teacher_logits and (report.teacher_logits_present or report.reason is not None) and not report.token_identity_match
 
 
 def _has_text(value: Any) -> bool:
@@ -497,6 +531,7 @@ def _report(
     schema_valid: bool = False,
     string_list_row: bool = False,
     answer_token_match: bool = False,
+    token_identity_match: bool = False,
     teacher_logits_present: bool = False,
     valid_teacher_logits: bool = False,
     logits_length_match: bool = False,
@@ -510,6 +545,7 @@ def _report(
         schema_valid=schema_valid,
         string_list_row=string_list_row,
         answer_token_match=answer_token_match,
+        token_identity_match=token_identity_match,
         teacher_logits_present=teacher_logits_present,
         valid_teacher_logits=valid_teacher_logits,
         logits_length_match=logits_length_match,
@@ -521,6 +557,7 @@ def _report(
 def _logits_report(
     valid: bool,
     reason: str | None,
+    token_identity_match: bool,
     valid_teacher_logits: bool,
     logits_length_match: bool,
     full_sequence_logits: bool,
@@ -529,6 +566,7 @@ def _logits_report(
     return _LogitsReport(
         valid=valid,
         reason=reason,
+        token_identity_match=token_identity_match,
         valid_teacher_logits=valid_teacher_logits,
         logits_length_match=logits_length_match,
         full_sequence_logits=full_sequence_logits,

@@ -157,6 +157,8 @@ def _print_teacher_validation_summary(summary: dict[str, object]) -> None:
     print(f"string_list_rows={summary['string_list_rows']}")
     print(f"answer_token_match_rows={summary['answer_token_match_rows']}")
     print(f"answer_token_mismatch_rows={summary['answer_token_mismatch_rows']}")
+    print(f"token_identity_match_rows={summary['token_identity_match_rows']}")
+    print(f"token_identity_mismatch_rows={summary['token_identity_mismatch_rows']}")
     print(f"rows_with_teacher_logits={summary['rows_with_teacher_logits']}")
     print(f"valid_teacher_logits_rows={summary['valid_teacher_logits_rows']}")
     print(f"logits_length_match_rows={summary['logits_length_match_rows']}")
