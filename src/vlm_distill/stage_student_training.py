@@ -71,6 +71,7 @@ class VlmTrainingDataset:
             target=target,
             max_length=self.config.training.max_length,
             mask_prompt_labels=self.config.training.mask_prompt_labels,
+            canonical_answer_span=True,
         )
         item = dict(encoded.model_inputs)
         _validate_student_supervised_labels_against_teacher_tokens(
@@ -82,12 +83,16 @@ class VlmTrainingDataset:
             teacher_field = self.config.distillation.teacher_logits_field
             switch_field = self.config.distillation.switch_logits_field
             supervised_label_ids = [int(token_id) for token_id in item["labels"][item["labels"] != -100].tolist()]
+            teacher_tokens = _extract_teacher_tokens(example)
             print("Switch-KD first sample label debug:")
+            print(f"  prompt_token_len: {encoded.prompt_token_len}")
             print(f"  teacher_tokens_len: {len(_extract_teacher_tokens(example))}")
             print(f"  teacher_logits_answer_token_ids_len: {len(coerce_token_ids(example.get(f'{teacher_field}_answer_token_ids')))}")
             print(f"  switch_logits_answer_token_ids_len: {len(coerce_token_ids(example.get(f'{switch_field}_answer_token_ids')))}")
             print(f"  student_supervised_label_ids_len: {len(supervised_label_ids)}")
-            print(f"  token_identity_validation_passed: {supervised_label_ids == _extract_teacher_tokens(example)}")
+            print(f"  first_5_teacher_tokens: {teacher_tokens[:5]}")
+            print(f"  first_5_student_labels: {supervised_label_ids[:5]}")
+            print(f"  token_identity_validation_passed: {supervised_label_ids == teacher_tokens}")
             self._token_identity_debug_printed = True
         item["prompt_token_len"] = encoded.prompt_token_len
 

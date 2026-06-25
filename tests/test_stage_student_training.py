@@ -21,6 +21,31 @@ class _DummyModel:
     pass
 
 
+class _CanonicalSpanProcessor:
+    def __init__(self):
+        self.tokenizer = type("Tok", (), {"pad_token_id": 0, "eos_token_id": 0})()
+        self._token_map = {
+            "<chat>prompt</chat>": [101, 102],
+            "<chat>prompt answer</chat>": [101, 102, 5890, 7000],
+        }
+
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True):
+        del tokenize, add_generation_prompt
+        return f"<chat>{messages[0]['content'][1]['text']}</chat>"
+
+    def __call__(self, images=None, text="", return_tensors="pt", truncation=True, max_length=128):
+        del images, return_tensors, truncation, max_length
+        if isinstance(text, list):
+            text = text[0]
+        token_ids = self._token_map[text]
+        input_ids = torch.tensor([token_ids], dtype=torch.long)
+        return {
+            "input_ids": input_ids,
+            "attention_mask": torch.ones_like(input_ids),
+            "pixel_values": torch.zeros(1, 3, 4, 4),
+        }
+
+
 def _make_config(tmp_path: Path, *, device_map="auto", quantization="none") -> PipelineConfig:
     return PipelineConfig(
         data=DataConfig(
@@ -267,6 +292,46 @@ def test_student_label_validation_fails_when_supervised_labels_differ(monkeypatc
 
     with pytest.raises(ValueError, match="Student label token identity mismatch"):
         _ = dataset[0]
+
+
+def test_student_dataset_accepts_canonical_teacher_answer_span(monkeypatch, tmp_path: Path):
+    config = PipelineConfig(
+        data=DataConfig(
+            manifest_path=tmp_path / "manifest.jsonl",
+            distill_path=tmp_path / "labels.jsonl",
+            image_root=tmp_path,
+        ),
+        teacher=TeacherConfig(model_name="Qwen2.5-VL-7B-Instruct"),
+        student=StudentConfig(
+            model_name="Qwen2.5-VL-3B-Instruct",
+            output_dir=tmp_path / "out",
+            adapter_dir=tmp_path / "adapter",
+        ),
+        distillation=DistillationConfig(method="switch_kd"),
+    )
+    rows = [
+        {
+            "id": "sample-1",
+            "image": "screen.png",
+            "task": "parsing",
+            "query": "hello",
+            "teacher_answer": "answer",
+            "teacher_tokens": [5890, 7000],
+            "teacher_logits": _valid_logits(2),
+            **_valid_identity_metadata("teacher_logits", [5890, 7000]),
+            "switch_logits": _valid_logits(2),
+            **_valid_identity_metadata("switch_logits", [5890, 7000]),
+        }
+    ]
+
+    monkeypatch.setattr("vlm_distill.vlm_batching.load_training_image", lambda *args, **kwargs: object())
+    monkeypatch.setattr("vlm_distill.stage_student_training.format_prompt", lambda *args, **kwargs: "prompt")
+
+    dataset = VlmTrainingDataset(rows, config, processor=_CanonicalSpanProcessor())
+    item = dataset[0]
+
+    assert item["labels"].tolist() == [-100, -100, 5890, 7000]
+    assert item["prompt_token_len"] == 2
 
 
 def test_switch_kd_training_paths_ignore_legacy_teacher_logits_path(tmp_path: Path):

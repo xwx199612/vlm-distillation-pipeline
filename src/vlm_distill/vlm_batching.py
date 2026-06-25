@@ -11,6 +11,7 @@ from PIL import Image
 class EncodedVlmSample:
     model_inputs: dict[str, Any]
     prompt_token_len: int
+    answer_token_ids: list[int] | None = None
 
 
 def load_training_image(image_root: Path, image_path: str, *, resize_mode: str = "original") -> Image.Image:
@@ -27,8 +28,19 @@ def encode_vlm_training_sample(
     target: str,
     max_length: int,
     mask_prompt_labels: bool = True,
+    canonical_answer_span: bool = True,
 ) -> EncodedVlmSample:
     """Encode one image+prompt+target sample for causal VLM fine-tuning."""
+    if canonical_answer_span:
+        return build_vlm_full_answer_span_inputs(
+            processor,
+            image=image,
+            prompt=prompt,
+            target=target,
+            max_length=max_length,
+            mask_prompt_labels=mask_prompt_labels,
+        )
+
     prompt_text = _build_training_prompt_text(processor, prompt.strip())
     target_text = target.strip()
     separator = "" if prompt_text.endswith((" ", "\n")) else " "
@@ -45,6 +57,38 @@ def encode_vlm_training_sample(
         labels[:prompt_token_len] = -100
     model_inputs["labels"] = labels
     return EncodedVlmSample(model_inputs=model_inputs, prompt_token_len=prompt_token_len)
+
+
+def build_vlm_full_answer_span_inputs(
+    processor,
+    *,
+    image: Image.Image,
+    prompt: str,
+    target: str,
+    max_length: int,
+    mask_prompt_labels: bool = True,
+) -> EncodedVlmSample:
+    prompt_text = _build_training_prompt_text(processor, prompt.strip())
+    full_text = _build_training_prompt_text(
+        processor,
+        _join_prompt_and_answer(prompt.strip(), target.strip()),
+    )
+    common_kwargs = {"return_tensors": "pt", "truncation": True, "max_length": max_length}
+    prompt_inputs = _processor_call(processor, image=image, text=prompt_text, **common_kwargs)
+    full_inputs = _processor_call(processor, image=image, text=full_text, **common_kwargs)
+
+    prompt_token_len = int(prompt_inputs["input_ids"].shape[1])
+    model_inputs = {key: value.squeeze(0) for key, value in full_inputs.items()}
+    answer_token_ids = [int(token_id) for token_id in full_inputs["input_ids"][0][prompt_token_len:].tolist()]
+    labels = model_inputs["input_ids"].clone()
+    if mask_prompt_labels:
+        labels[:prompt_token_len] = -100
+    model_inputs["labels"] = labels
+    return EncodedVlmSample(
+        model_inputs=model_inputs,
+        prompt_token_len=prompt_token_len,
+        answer_token_ids=answer_token_ids,
+    )
 
 
 def build_vlm_data_collator(processor, *, logits_fields=("teacher_logits", "switch_logits")):
@@ -151,6 +195,11 @@ def _build_training_prompt_text(processor, prompt: str) -> str:
         tokenize=False,
         add_generation_prompt=True,
     )
+
+
+def _join_prompt_and_answer(prompt: str, answer: str) -> str:
+    separator = "" if prompt.endswith((" ", "\n")) else " "
+    return f"{prompt}{separator}{answer}".strip()
 
 
 def _resolve_pad_token_id(processor) -> int:
