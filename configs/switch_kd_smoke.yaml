@@ -62,6 +62,12 @@ distillation:
   max_cached_logits_vocab: 16
   align_kd_logits_to_answer: true
   skip_kd_on_vocab_mismatch: true
+  switch_kd:
+    enabled: true
+    visual_switch:
+      mode: paper
+      teacher_projector: native
+      allow_fallback_adapter: false
 
 evaluation:
   output_path: outputs/smoke/eval_report.json

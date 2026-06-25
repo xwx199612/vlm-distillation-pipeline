@@ -44,6 +44,14 @@ training:
   image_resize: original
 
 distillation:
+  switch_kd:
+    enabled: true
+    visual_switch:
+      mode: paper
+      teacher_projector: native
+      allow_fallback_adapter: false
+
+distillation:
   confidence_weighting: true
   min_teacher_confidence: 0.35
   prompt_template: "query: {query}\nAnswer:"

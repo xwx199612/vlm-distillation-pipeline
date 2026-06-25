@@ -240,7 +240,10 @@ for gpu_index in range(4):
         f"teacher_logits_path=deprecated "
         f"teacher_logits_field={config_data.get('distillation', {}).get('teacher_logits_field')} "
         f"unified_teacher_precompute_enabled=true "
-        f"canonical_teacher_output_path=label_path"
+        f"canonical_teacher_output_path=label_path "
+        f"switch_kd.visual_switch.mode={config_data.get('distillation', {}).get('switch_kd', {}).get('visual_switch', {}).get('mode')} "
+        f"switch_kd.visual_switch.teacher_projector={config_data.get('distillation', {}).get('switch_kd', {}).get('visual_switch', {}).get('teacher_projector')} "
+        f"switch_kd.visual_switch.allow_fallback_adapter={config_data.get('distillation', {}).get('switch_kd', {}).get('visual_switch', {}).get('allow_fallback_adapter')}"
     )
 PY
 }
@@ -298,6 +301,12 @@ print(f"teacher_logits: {str(teacher_logits).lower()}")
 print(f"canonical teacher output path is label_path: {label_path}")
 print("unified teacher precompute enabled")
 print(f"teacher output mode: {mode}")
+visual_switch = distillation.get("switch_kd", {}).get("visual_switch", {})
+print(f"Switch-KD visual-switch mode: {visual_switch.get('mode', 'paper')}")
+print("T-Projector definition: teacher native projector / merger")
+print("Visual-switch path: student visual encoder output -> teacher projector/merger -> teacher LLM")
+fallback_adapter = visual_switch.get("allow_fallback_adapter", False)
+print(f"Fallback adapter: {'enabled' if fallback_adapter else 'disabled'}")
 PY
   echo "=== current working directory ==="
   pwd

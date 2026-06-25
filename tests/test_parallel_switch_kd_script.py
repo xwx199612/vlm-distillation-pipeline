@@ -32,6 +32,10 @@ def test_base_switch_kd_configs_are_unified_teacher_precompute_source_of_truth()
 
         assert config["distillation"]["method"] == "switch_kd"
         assert config["distillation"]["teacher_logits"] is True
+        assert config["distillation"]["switch_kd"]["enabled"] is True
+        assert config["distillation"]["switch_kd"]["visual_switch"]["mode"] == "paper"
+        assert config["distillation"]["switch_kd"]["visual_switch"]["teacher_projector"] == "native"
+        assert config["distillation"]["switch_kd"]["visual_switch"]["allow_fallback_adapter"] is False
         assert config["data"]["label_path"] == (
             "outputs/switch-kd/{task_name}_teacher_labels_{label_profile}.jsonl"
         )
@@ -46,6 +50,11 @@ def test_parallel_precompute_script_preserves_switch_kd_method_in_generated_conf
     assert "distillation.teacher_logits={config_data.get('distillation', {}).get('teacher_logits')}" in text
     assert "teacher_logits_field={config_data.get('distillation', {}).get('teacher_logits_field')}" in text
     assert "canonical_teacher_output_path=label_path" in text
+    assert "switch_kd.visual_switch.mode=" in text
+    assert "Switch-KD visual-switch mode:" in text
+    assert "T-Projector definition: teacher native projector / merger" in text
+    assert "Visual-switch path: student visual encoder output -> teacher projector/merger -> teacher LLM" in text
+    assert "Fallback adapter:" in text
     assert "teacher-logits" not in text
 
 
@@ -55,6 +64,8 @@ def test_generated_shard_configs_preserve_unified_teacher_precompute_semantics()
 
         assert config["distillation"]["method"] == "switch_kd"
         assert config["distillation"]["teacher_logits"] is True
+        assert config["distillation"]["switch_kd"]["visual_switch"]["mode"] == "paper"
+        assert config["distillation"]["switch_kd"]["visual_switch"]["allow_fallback_adapter"] is False
         assert config["data"]["label_path"].startswith(
             "outputs/switch-kd/shards/parsing_teacher_labels_shard"
         )
@@ -158,6 +169,10 @@ def test_parallel_precompute_script_dry_run_all_runs_teacher_precompute_then_swi
         first = output.index("python -m vlm_distill.cli teacher-precompute")
         second = output.index("python -m vlm_distill.cli switch-logits")
         assert first < second
+        assert "Switch-KD visual-switch mode: paper" in output
+        assert "T-Projector definition: teacher native projector / merger" in output
+        assert "Visual-switch path: student visual encoder output -> teacher projector/merger -> teacher LLM" in output
+        assert "Fallback adapter: disabled" in output
     finally:
         manifest_path.unlink(missing_ok=True)
         for gpu in range(4):

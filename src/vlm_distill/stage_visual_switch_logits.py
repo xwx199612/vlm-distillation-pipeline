@@ -45,7 +45,7 @@ class VisualSwitchDistiller:
     """Generate VSD switch logits.
 
     Flow:
-      student vision encoder -> student projector -> optional dimension aligner
+      student vision encoder -> teacher native projector / merger
       -> teacher LLM input embedding stream -> teacher LLM -> switch logits
 
     Component paths are configurable because VLM repositories expose different
@@ -71,8 +71,11 @@ class VisualSwitchDistiller:
         self._last_vsd_projector_path: str | None = None
         self._last_student_vision_type: str | None = None
         self._last_visual_switch_projector_type: str | None = None
+        self._last_visual_switch_mode: str | None = None
         self._last_teacher_lm_type: str | None = None
         self._last_teacher_token_embedding_type: str | None = None
+        self._last_teacher_projector_type: str | None = None
+        self._last_teacher_projector_path: str | None = None
 
     def load(self) -> None:
         self.load_student_only()
@@ -229,12 +232,12 @@ class VisualSwitchDistiller:
         with torch.no_grad():
             student_inputs = self._student_image_inputs(image)
             student_visual = self._student_visual_outputs(student_inputs)
-            projected_visual = self._student_projector_outputs(student_visual, student_inputs)
-            return self._generate_for_sample_from_projected_visual(
+            return self._generate_for_sample_from_student_visual(
                 sample=sample,
                 prompt=prompt,
-                projected_visual=projected_visual,
+                student_visual=student_visual,
                 base_row=base_row,
+                student_inputs=student_inputs,
             )
 
     def generate_student_visual_cache_for_sample(self, sample: VlmSample, cache_path: Path) -> None:
@@ -253,18 +256,17 @@ class VisualSwitchDistiller:
         with self._torch.no_grad():
             student_inputs = self._student_image_inputs(image)
             student_visual = self._student_visual_outputs(student_inputs)
-            projected_visual = self._student_projector_outputs(student_visual, student_inputs)
-            projected_visual = projected_visual.detach()
+            student_visual = student_visual.detach()
             if self.config.distillation.keep_student_visual_cache_on_cpu:
-                projected_visual = projected_visual.cpu()
+                student_visual = student_visual.cpu()
 
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         self._torch.save(
             {
                 "id": str(sample.id),
-                "projected_visual": projected_visual,
-                "shape": list(projected_visual.shape),
-                "dtype": str(projected_visual.dtype),
+                "student_vision_hidden_states": student_visual,
+                "shape": list(student_visual.shape),
+                "dtype": str(student_visual.dtype),
             },
             cache_path,
         )
@@ -282,7 +284,12 @@ class VisualSwitchDistiller:
             self.load_teacher_only()
 
         cached = self._torch.load(cache_path, map_location="cpu")
-        projected_visual = cached["projected_visual"]
+        if "student_vision_hidden_states" not in cached:
+            raise ValueError(
+                "Switch-KD paper path incompatible: student visual cache does not contain "
+                "student_vision_hidden_states. Regenerate the cache with the paper-mode pipeline."
+            )
+        student_visual = cached["student_vision_hidden_states"]
         prompt = format_prompt(
             self.config.distillation.prompt_template,
             query=sample.query,
@@ -291,10 +298,10 @@ class VisualSwitchDistiller:
             task=sample.task,
         )
         with self._torch.no_grad():
-            return self._generate_for_sample_from_projected_visual(
+            return self._generate_for_sample_from_student_visual(
                 sample=sample,
                 prompt=prompt,
-                projected_visual=projected_visual,
+                student_visual=student_visual,
                 base_row=base_row,
             )
 
@@ -365,11 +372,6 @@ class VisualSwitchDistiller:
             "student vision encoder",
         )
         visual_switch_projector = self._visual_switch_projector_component()
-        student_projector = visual_switch_projector if distill.teacher_projector_path else self._student_component(
-            distill.student_projector_path,
-            _STUDENT_PROJECTOR_CANDIDATES,
-            "student projector",
-        )
         teacher_lm = self._teacher_component(
             distill.teacher_lm_path,
             _TEACHER_LM_CANDIDATES,
@@ -386,7 +388,7 @@ class VisualSwitchDistiller:
         )
         return VSDComponents(
             student_vision=student_vision,
-            student_projector=student_projector,
+            student_projector=visual_switch_projector,
             visual_switch_projector=visual_switch_projector,
             teacher_lm=teacher_lm,
             teacher_token_embedding=teacher_token_embedding,
@@ -409,33 +411,31 @@ class VisualSwitchDistiller:
         return _resolve_optional_component(self._teacher_model, configured_path, candidates)
 
     def _visual_switch_projector_component(self):
-        distill = self.config.distillation
-        if distill.teacher_projector_path:
+        visual_switch = self.config.distillation.switch_kd.visual_switch
+        mode = visual_switch.mode
+        self._last_visual_switch_mode = mode
+        if mode == "paper":
             if self._teacher_model is None:
-                raise RuntimeError(
-                    "Teacher model is not loaded while resolving distillation.teacher_projector_path."
-                )
-            try:
-                projector = _get_nested_attr(self._teacher_model, distill.teacher_projector_path)
-            except AttributeError as exc:
-                raise ValueError(
-                    "Could not resolve distillation.teacher_projector_path="
-                    f"{distill.teacher_projector_path!r} on the teacher model."
-                ) from exc
+                raise RuntimeError("Teacher model is not loaded while resolving the paper visual-switch projector.")
+            projector, resolved_path = _resolve_teacher_visual_projector_or_merger_with_path(self._teacher_model)
             self._last_vsd_projector_source = "teacher"
-            self._last_vsd_projector_path = distill.teacher_projector_path
+            self._last_vsd_projector_path = resolved_path
             self._last_visual_switch_projector_type = type(projector).__name__
             return projector
 
-        self._last_vsd_projector_source = "student"
-        self._last_vsd_projector_path = distill.student_projector_path
-        projector = self._student_component(
-            distill.student_projector_path,
-            _STUDENT_PROJECTOR_CANDIDATES,
-            "student projector",
+        if not visual_switch.allow_fallback_adapter:
+            raise ValueError(
+                "Switch-KD adapter mode requires allow_fallback_adapter=true."
+            )
+
+        adapter = self._resolve_visual_switch_adapter()
+        self._last_vsd_projector_source = "adapter"
+        self._last_vsd_projector_path = visual_switch.adapter_path
+        self._last_visual_switch_projector_type = type(adapter).__name__
+        print(
+            "This is a project-specific Switch-KD variant, not the original paper path."
         )
-        self._last_visual_switch_projector_type = type(projector).__name__
-        return projector
+        return adapter
 
     def _student_image_inputs(self, image):
         student_inputs = _processor_image_inputs(self._student_processor, image)
@@ -448,24 +448,17 @@ class VisualSwitchDistiller:
             "student vision encoder",
         )
         self._last_student_vision_type = type(student_vision).__name__
-        device = module_device(student_vision)
-        vision_inputs = batch_to_device(student_inputs, device)
-        vision_kwargs = _build_vision_forward_kwargs(student_vision, vision_inputs)
-        outputs = student_vision(**vision_kwargs)
-        return _first_tensor(outputs)
+        student_vision_hidden_states = extract_student_vision_hidden_states(
+            self._student_model,
+            self._student_processor,
+            student_inputs=student_inputs,
+            student_input_device=self._student_input_device,
+            student_vision_path=self.config.distillation.student_vision_path,
+        )
+        return student_vision_hidden_states
 
     def _student_projector_outputs(self, visual_outputs, student_inputs):
-        student_projector = self._visual_switch_projector_component()
-        projector_kwargs = _build_projector_forward_kwargs(
-            student_projector,
-            visual_outputs,
-            student_inputs,
-        )
-        projected = student_projector(**projector_kwargs)
-        projected_tensor = _first_tensor(projected)
-        self._last_visual_switch_projector_type = type(student_projector).__name__
-        self._last_visual_dim_before_projection = int(visual_outputs.shape[-1])
-        self._last_visual_dim_after_projection = int(projected_tensor.shape[-1])
+        projected_tensor = self._apply_visual_switch_projection(visual_outputs, student_inputs)
         return projected_tensor
 
     def _teacher_text_inputs(self, prompt: str):
@@ -486,7 +479,12 @@ class VisualSwitchDistiller:
         self._last_teacher_embedding_dim = int(text_embeds.shape[-1])
         projected_visual = projected_visual.to(text_embeds.device, dtype=text_embeds.dtype)
         projected_visual = _ensure_batch_sequence(projected_visual)
-        projected_visual = self._align_visual_dim(projected_visual, text_embeds.shape[-1])
+        if int(projected_visual.shape[-1]) != int(text_embeds.shape[-1]):
+            raise ValueError(
+                "Switch-KD paper path incompatible: teacher_projected_visual_embeds.shape[-1] "
+                f"={int(projected_visual.shape[-1])} does not match teacher LLM hidden size "
+                f"={int(text_embeds.shape[-1])}."
+            )
 
         placeholder_id = self._visual_placeholder_id()
         if placeholder_id is not None:
@@ -534,24 +532,142 @@ class VisualSwitchDistiller:
             raise ValueError("Teacher LLM output has no logits and no teacher_lm_head_path was resolved.")
         return teacher_lm_head(hidden_states)
 
-    def _align_visual_dim(self, visual_embeds, teacher_dim: int):
-        import torch
+    def _apply_visual_switch_projection(self, student_visual, student_inputs):
+        visual_switch = self.config.distillation.switch_kd.visual_switch
+        mode = visual_switch.mode
+        self._last_visual_switch_mode = mode
+        if mode == "paper":
+            return self._paper_path_projection(student_visual)
+        if mode == "adapter_to_teacher_projector":
+            return self._adapter_to_teacher_projector_projection(student_visual, student_inputs)
+        if mode == "adapter_to_teacher_lm":
+            return self._adapter_to_teacher_lm_projection(student_visual, student_inputs)
+        raise ValueError(f"Unsupported Switch-KD visual-switch mode: {mode!r}")
 
-        visual_dim = visual_embeds.shape[-1]
-        if visual_dim == teacher_dim:
-            self._last_dim_aligner_created = False
-            return visual_embeds
-        if self._aligner is None:
-            self._aligner = torch.nn.Linear(visual_dim, teacher_dim, bias=False).to(
-                visual_embeds.device,
-                dtype=visual_embeds.dtype,
+    def _paper_path_projection(self, student_visual):
+        if self._teacher_model is None:
+            raise RuntimeError("Teacher model is not loaded while resolving the paper visual-switch path.")
+        teacher_projector, resolved_path = _resolve_teacher_visual_projector_or_merger_with_path(self._teacher_model)
+        self._last_teacher_projector_type = type(teacher_projector).__name__
+        self._last_teacher_projector_path = resolved_path
+
+        student_dim = int(student_visual.shape[-1])
+        teacher_projector_input_dim = _infer_module_input_dim(
+            teacher_projector,
+            model=self._teacher_model,
+            module_label="teacher projector/merger",
+        )
+        if teacher_projector_input_dim is not None and student_dim != teacher_projector_input_dim:
+            raise ValueError(
+                "Switch-KD paper path incompatible: student_vision_hidden_states.shape[-1] "
+                f"={student_dim} does not match teacher projector/merger input dim "
+                f"={teacher_projector_input_dim}."
             )
-            torch.nn.init.xavier_uniform_(self._aligner.weight)
-            self._aligner.requires_grad_(False)
-            self._last_dim_aligner_created = True
-        else:
-            self._last_dim_aligner_created = False
-        return self._aligner(visual_embeds)
+
+        projector_kwargs = _build_visual_feature_forward_kwargs(teacher_projector, student_visual)
+        projected = teacher_projector(**projector_kwargs)
+        projected_tensor = _first_tensor(projected)
+        teacher_hidden_size = _infer_teacher_llm_hidden_size(self._teacher_model)
+        if teacher_hidden_size is not None and int(projected_tensor.shape[-1]) != teacher_hidden_size:
+            raise ValueError(
+                "Switch-KD paper path incompatible: teacher_projected_visual_embeds.shape[-1] "
+                f"={int(projected_tensor.shape[-1])} does not match teacher LLM hidden size "
+                f"={teacher_hidden_size}."
+            )
+        self._last_visual_dim_before_projection = student_dim
+        self._last_visual_dim_after_projection = int(projected_tensor.shape[-1])
+        self._last_dim_aligner_created = False
+        self._last_visual_switch_projector_type = type(teacher_projector).__name__
+        return projected_tensor
+
+    def _adapter_to_teacher_projector_projection(self, student_visual, student_inputs):
+        adapter = self._resolve_visual_switch_adapter()
+        adapter_kwargs = _build_visual_feature_forward_kwargs(adapter, student_visual)
+        adapted_visual = _first_tensor(adapter(**adapter_kwargs))
+        return self._teacher_projector_projection(adapted_visual)
+
+    def _adapter_to_teacher_lm_projection(self, student_visual, student_inputs):
+        teacher_projected = self._paper_path_projection(student_visual)
+        adapter = self._resolve_visual_switch_adapter()
+        adapter_kwargs = _build_visual_feature_forward_kwargs(adapter, teacher_projected)
+        adapted_visual = _first_tensor(adapter(**adapter_kwargs))
+        teacher_hidden_size = _infer_teacher_llm_hidden_size(self._teacher_model)
+        if teacher_hidden_size is not None and int(adapted_visual.shape[-1]) != teacher_hidden_size:
+            raise ValueError(
+                "Switch-KD adapter_to_teacher_lm path incompatible: adapter output dim "
+                f"={int(adapted_visual.shape[-1])} does not match teacher LLM hidden size "
+                f"={teacher_hidden_size}."
+            )
+        self._last_visual_dim_after_projection = int(adapted_visual.shape[-1])
+        self._last_visual_switch_projector_type = type(adapter).__name__
+        return adapted_visual
+
+    def _teacher_projector_projection(self, student_visual):
+        if self._teacher_model is None:
+            raise RuntimeError("Teacher model is not loaded while resolving the teacher projector path.")
+        teacher_projector, resolved_path = _resolve_teacher_visual_projector_or_merger_with_path(self._teacher_model)
+        self._last_teacher_projector_type = type(teacher_projector).__name__
+        self._last_teacher_projector_path = resolved_path
+        teacher_projector_input_dim = _infer_module_input_dim(
+            teacher_projector,
+            model=self._teacher_model,
+            module_label="teacher projector/merger",
+        )
+        student_dim = int(student_visual.shape[-1])
+        if teacher_projector_input_dim is not None and student_dim != teacher_projector_input_dim:
+            raise ValueError(
+                "Switch-KD adapter_to_teacher_projector path incompatible: student_vision_hidden_states.shape[-1] "
+                f"={student_dim} does not match teacher projector/merger input dim "
+                f"={teacher_projector_input_dim}."
+            )
+        projector_kwargs = _build_visual_feature_forward_kwargs(teacher_projector, student_visual)
+        projected = teacher_projector(**projector_kwargs)
+        projected_tensor = _first_tensor(projected)
+        teacher_hidden_size = _infer_teacher_llm_hidden_size(self._teacher_model)
+        if teacher_hidden_size is not None and int(projected_tensor.shape[-1]) != teacher_hidden_size:
+            raise ValueError(
+                "Switch-KD adapter_to_teacher_projector path incompatible: teacher_projected_visual_embeds.shape[-1] "
+                f"={int(projected_tensor.shape[-1])} does not match teacher LLM hidden size "
+                f"={teacher_hidden_size}."
+            )
+        self._last_visual_dim_before_projection = student_dim
+        self._last_visual_dim_after_projection = int(projected_tensor.shape[-1])
+        self._last_visual_switch_projector_type = type(teacher_projector).__name__
+        return projected_tensor
+
+    def _resolve_visual_switch_adapter(self):
+        visual_switch = self.config.distillation.switch_kd.visual_switch
+        adapter_path = visual_switch.adapter_path
+        if adapter_path:
+            if self._student_model is not None:
+                try:
+                    return _get_nested_attr(self._student_model, adapter_path)
+                except AttributeError:
+                    pass
+            if self._teacher_model is not None:
+                try:
+                    return _get_nested_attr(self._teacher_model, adapter_path)
+                except AttributeError as exc:
+                    raise ValueError(
+                        "Could not resolve distillation.switch_kd.visual_switch.adapter_path="
+                        f"{adapter_path!r} on the student or teacher model."
+                    ) from exc
+        if self.config.distillation.student_projector_path:
+            return self._student_component(
+                self.config.distillation.student_projector_path,
+                _STUDENT_PROJECTOR_CANDIDATES,
+                "student projector adapter",
+            )
+        if self.config.distillation.teacher_projector_path:
+            return self._teacher_component(
+                self.config.distillation.teacher_projector_path,
+                _STUDENT_PROJECTOR_CANDIDATES,
+                "teacher projector adapter",
+            )
+        raise ValueError(
+            "Switch-KD adapter mode requires distillation.switch_kd.visual_switch.adapter_path "
+            "or a legacy adapter path."
+        )
 
     def _maybe_log_vsd_path_configuration(self) -> None:
         if self._vsd_path_logged:
@@ -564,19 +680,19 @@ class VisualSwitchDistiller:
         if self._last_teacher_embedding_dim is None:
             return
 
-        identity_projector_used = (
-            self._last_vsd_projector_source == "student"
-            and distill.student_projector_path == "__identity__"
-        )
+        mode = self._last_visual_switch_mode or distill.switch_kd.visual_switch.mode
         student_vision_type = self._last_student_vision_type or "<unavailable>"
         teacher_lm_type = self._last_teacher_lm_type or "<unavailable>"
         teacher_token_embedding_type = self._last_teacher_token_embedding_type or "<unavailable>"
+        teacher_projector_type = self._last_teacher_projector_type or "<unavailable>"
         visual_switch_projector_type = self._last_visual_switch_projector_type or "<unavailable>"
         print("[switch-logits][vsd] path resolution:")
+        print(f"  visual_switch_mode: {mode}")
         print(f"  student_vision_path: {distill.student_vision_path}")
         print(f"  student_vision_type: {student_vision_type}")
         print(f"  student_projector_path: {distill.student_projector_path}")
         print(f"  teacher_projector_path: {distill.teacher_projector_path}")
+        print(f"  teacher_projector_type: {teacher_projector_type}")
         print(f"  teacher_lm_path: {distill.teacher_lm_path}")
         print(f"  teacher_lm_type: {teacher_lm_type}")
         print(f"  teacher_token_embedding_path: {distill.teacher_token_embedding_path}")
@@ -584,15 +700,15 @@ class VisualSwitchDistiller:
         print(f"  visual_switch_projector_source: {self._last_vsd_projector_source}")
         print(f"  visual_switch_projector_path: {self._last_vsd_projector_path}")
         print(f"  visual_switch_projector_type: {visual_switch_projector_type}")
-        print(f"  identity_projector_used: {identity_projector_used}")
-        print(f"  dim_aligner_created: {self._last_dim_aligner_created}")
+        print(
+            f"  Fallback adapter: {'enabled' if distill.switch_kd.visual_switch.allow_fallback_adapter else 'disabled'}"
+        )
         print(f"  visual_dim_before_projection: {self._last_visual_dim_before_projection}")
         print(f"  visual_dim_after_projection: {self._last_visual_dim_after_projection}")
         print(f"  teacher_embedding_dim: {self._last_teacher_embedding_dim}")
-        if identity_projector_used:
+        if mode != "paper":
             print(
-                "WARNING: VSD is using identity projector plus dim aligner. "
-                "This is an approximation, not paper-faithful S-ViT -> T-Projector -> T-LLM."
+                "This is a project-specific Switch-KD variant, not the original paper path."
             )
         self._vsd_path_logged = True
 
@@ -607,16 +723,18 @@ class VisualSwitchDistiller:
             return None
         return int(token_id)
 
-    def _generate_for_sample_from_projected_visual(
+    def _generate_for_sample_from_student_visual(
         self,
         *,
         sample: VlmSample,
         prompt: str,
-        projected_visual,
+        student_visual,
         base_row: dict[str, Any] | None = None,
+        student_inputs: dict[str, Any] | None = None,
     ):
         teacher_answer = str((base_row or {}).get("teacher_answer") or "").strip()
         full_text = _join_prompt_and_answer(prompt, teacher_answer)
+        projected_visual = self._apply_visual_switch_projection(student_visual, student_inputs)
         prompt_teacher_inputs = self._teacher_text_inputs(prompt)
         prompt_embeds, _ = self._splice_visual_embeds(
             teacher_inputs=prompt_teacher_inputs,
@@ -662,6 +780,22 @@ class VisualSwitchDistiller:
             "teacher_tokens": teacher_tokens,
         }
 
+    def _generate_for_sample_from_projected_visual(
+        self,
+        *,
+        sample: VlmSample,
+        prompt: str,
+        projected_visual,
+        base_row: dict[str, Any] | None = None,
+    ):
+        return self._generate_for_sample_from_student_visual(
+            sample=sample,
+            prompt=prompt,
+            student_visual=projected_visual,
+            base_row=base_row,
+            student_inputs=None,
+        )
+
 def create_visual_switch_dataset(config: PipelineConfig) -> Path:
     samples = validate_manifest(
         config.data.manifest_path,
@@ -701,8 +835,6 @@ def create_visual_switch_dataset(config: PipelineConfig) -> Path:
             f"pending={len(pending_samples)} cache_dir={cache_dir}"
         )
         distiller.load_student_only()
-        if config.distillation.teacher_projector_path:
-            distiller.load_teacher_only()
         cached_now = 0
         for sample in pending_samples:
             cache_path = _student_visual_cache_path(cache_dir, sample)
@@ -933,6 +1065,150 @@ def _student_visual_cache_dir(config: PipelineConfig, output_path: Path) -> Path
 def _student_visual_cache_path(cache_dir: Path, sample: VlmSample) -> Path:
     sample_key = quote(str(sample.id), safe="-_.")
     return cache_dir / f"{sample_key}.pt"
+
+
+def get_teacher_visual_projector_or_merger(teacher_model):
+    projector = _resolve_teacher_visual_projector_or_merger(teacher_model)
+    return projector
+
+
+def extract_student_vision_hidden_states(
+    student_model,
+    student_processor,
+    *,
+    student_inputs: dict[str, Any] | None = None,
+    image=None,
+    student_input_device=None,
+    student_vision_path: str | None = None,
+):
+    if student_inputs is None:
+        if image is None:
+            raise ValueError("student_inputs or image must be provided to extract student vision hidden states.")
+        student_inputs = _processor_image_inputs(student_processor, image)
+    vision_module = _resolve_component(
+        student_model,
+        student_vision_path,
+        _STUDENT_VISION_CANDIDATES,
+        "student vision encoder",
+    )
+    vision_device = module_device(vision_module)
+    if vision_device is None:
+        vision_device = student_input_device
+    vision_inputs = batch_to_device(student_inputs, vision_device)
+    vision_kwargs = _build_vision_forward_kwargs(vision_module, vision_inputs)
+    outputs = vision_module(**vision_kwargs)
+    return _first_tensor(outputs)
+
+
+def _resolve_teacher_visual_projector_or_merger(teacher_model):
+    projector, path = _resolve_teacher_visual_projector_or_merger_with_path(teacher_model)
+    return projector
+
+
+def _resolve_teacher_visual_projector_or_merger_with_path(teacher_model):
+    projector = None
+    resolved_path = None
+    for path in _TEACHER_VISUAL_PROJECTOR_CANDIDATES:
+        try:
+            projector = _get_nested_attr(teacher_model, path)
+        except AttributeError:
+            continue
+        resolved_path = path
+        break
+    if projector is None:
+        raise AttributeError(
+            "Could not resolve teacher visual projector or merger. "
+            "Set distillation.switch_kd.visual_switch.adapter_path for a project-specific adapter "
+            "or ensure the teacher model exposes a native projector/merger."
+        )
+    return projector, resolved_path
+
+
+def _build_visual_feature_forward_kwargs(module, visual_outputs) -> dict[str, Any]:
+    try:
+        parameters = inspect.signature(module).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+
+    if "x" in parameters:
+        return {"x": visual_outputs}
+    if "hidden_states" in parameters:
+        return {"hidden_states": visual_outputs}
+    if "inputs_embeds" in parameters:
+        return {"inputs_embeds": visual_outputs}
+    if hasattr(module, "forward"):
+        try:
+            forward_params = inspect.signature(module.forward).parameters
+        except (TypeError, ValueError):
+            forward_params = {}
+        if "x" in forward_params:
+            return {"x": visual_outputs}
+        if "hidden_states" in forward_params:
+            return {"hidden_states": visual_outputs}
+        if "inputs_embeds" in forward_params:
+            return {"inputs_embeds": visual_outputs}
+    return {"x": visual_outputs}
+
+
+def _infer_module_input_dim(module, *, model=None, module_label: str) -> int | None:
+    for candidate in (
+        getattr(module, "in_features", None),
+        getattr(module, "input_size", None),
+        getattr(module, "input_dim", None),
+    ):
+        if candidate is not None:
+            return int(candidate)
+    if hasattr(module, "weight"):
+        weight = getattr(module, "weight")
+        if hasattr(weight, "shape") and len(weight.shape) >= 2:
+            return int(weight.shape[-1])
+    if model is not None:
+        config = getattr(model, "config", None)
+        for attr in ("hidden_size", "mm_hidden_size", "vision_hidden_size"):
+            value = getattr(config, attr, None) if config is not None else None
+            if value is not None:
+                return int(value)
+    raise ValueError(
+        f"Switch-KD paper path incompatible: could not infer {module_label} input dim."
+    )
+
+
+def _infer_teacher_llm_hidden_size(teacher_model) -> int | None:
+    config = getattr(teacher_model, "config", None)
+    if config is not None:
+        for attr in ("hidden_size", "text_config", "vision_config"):
+            value = getattr(config, attr, None)
+            if attr == "hidden_size" and value is not None:
+                return int(value)
+            if attr == "text_config" and value is not None:
+                hidden_size = getattr(value, "hidden_size", None)
+                if hidden_size is not None:
+                    return int(hidden_size)
+    lm = None
+    for path in _TEACHER_LM_CANDIDATES:
+        try:
+            lm = _get_nested_attr(teacher_model, path)
+        except AttributeError:
+            continue
+        break
+    if lm is not None:
+        lm_config = getattr(lm, "config", None)
+        if lm_config is not None:
+            hidden_size = getattr(lm_config, "hidden_size", None)
+            if hidden_size is not None:
+                return int(hidden_size)
+    token_embedding = None
+    for path in _TEACHER_EMBEDDING_CANDIDATES:
+        try:
+            token_embedding = _get_nested_attr(teacher_model, path)
+        except AttributeError:
+            continue
+        break
+    if token_embedding is not None and hasattr(token_embedding, "weight"):
+        weight = getattr(token_embedding, "weight")
+        if hasattr(weight, "shape") and len(weight.shape) >= 2:
+            return int(weight.shape[-1])
+    return None
 
 
 def _resolve_component(model, configured_path: str | None, candidates: tuple[str, ...], label: str):
@@ -1303,6 +1579,21 @@ _STUDENT_PROJECTOR_CANDIDATES = (
     "model.visual_projector",
     "projector",
     "model.projector",
+)
+
+_TEACHER_VISUAL_PROJECTOR_CANDIDATES = (
+    "multi_modal_projector",
+    "model.multi_modal_projector",
+    "mm_projector",
+    "model.mm_projector",
+    "visual_projector",
+    "model.visual_projector",
+    "projector",
+    "model.projector",
+    "visual",
+    "model.visual",
+    "merger",
+    "model.merger",
 )
 
 _TEACHER_LM_CANDIDATES = (

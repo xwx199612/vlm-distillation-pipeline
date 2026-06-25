@@ -75,6 +75,21 @@ class TrainingConfig:
     mask_prompt_labels: bool = True
     quantization: str = "none"
 
+
+@dataclass
+class VisualSwitchConfig:
+    mode: str = "paper"
+    teacher_projector: str = "native"
+    allow_fallback_adapter: bool = False
+    adapter_path: str | None = None
+
+
+@dataclass
+class SwitchKDConfig:
+    enabled: bool = True
+    visual_switch: VisualSwitchConfig = field(default_factory=VisualSwitchConfig)
+
+
 @dataclass
 class DistillationConfig:
     confidence_weighting: bool = True
@@ -109,6 +124,7 @@ class DistillationConfig:
     max_cached_logits_vocab: int | None = 4096
     align_kd_logits_to_answer: bool = True
     skip_kd_on_vocab_mismatch: bool = True
+    switch_kd: SwitchKDConfig = field(default_factory=SwitchKDConfig)
 
 
 @dataclass
@@ -246,6 +262,7 @@ def _build_distillation_config(raw: dict[str, Any]) -> DistillationConfig:
             values[key] = remap_output_path_string(values[key])
     if values.get("student_visual_cache_dir") is not None:
         values["student_visual_cache_dir"] = remap_output_path(Path(values["student_visual_cache_dir"]))
+    values["switch_kd"] = _build_switch_kd_config(values.get("switch_kd", {}))
     dbild_top_k_mode = values.get("dbild_top_k_mode", "fixed")
     if dbild_top_k_mode not in {"fixed", "kneedle"}:
         raise ValueError("distillation.dbild_top_k_mode must be one of: fixed, kneedle.")
@@ -267,6 +284,44 @@ def _build_distillation_config(raw: dict[str, Any]) -> DistillationConfig:
             raise ValueError("distillation.dbild_max_top_k must be >= distillation.dbild_min_top_k.")
         values["dbild_max_top_k"] = dbild_max_top_k
     return DistillationConfig(**values)
+
+
+def _build_switch_kd_config(raw: Any) -> SwitchKDConfig:
+    values = dict(raw or {})
+    visual_switch = _build_visual_switch_config(values.get("visual_switch", {}))
+    values["visual_switch"] = visual_switch
+    enabled = values.get("enabled", True)
+    return SwitchKDConfig(enabled=bool(enabled), visual_switch=visual_switch)
+
+
+def _build_visual_switch_config(raw: Any) -> VisualSwitchConfig:
+    values = dict(raw or {})
+    mode = str(values.get("mode", "paper"))
+    if mode not in {"paper", "adapter_to_teacher_projector", "adapter_to_teacher_lm"}:
+        raise ValueError(
+            "distillation.switch_kd.visual_switch.mode must be one of: "
+            "paper, adapter_to_teacher_projector, adapter_to_teacher_lm."
+        )
+    teacher_projector = str(values.get("teacher_projector", "native"))
+    if teacher_projector != "native":
+        raise ValueError(
+            "distillation.switch_kd.visual_switch.teacher_projector must be 'native'."
+        )
+    allow_fallback_adapter = bool(values.get("allow_fallback_adapter", False))
+    if mode != "paper" and not allow_fallback_adapter:
+        raise ValueError(
+            "distillation.switch_kd.visual_switch.allow_fallback_adapter must be true "
+            "when mode is adapter_to_teacher_projector or adapter_to_teacher_lm."
+        )
+    adapter_path = values.get("adapter_path")
+    if adapter_path is not None:
+        adapter_path = remap_output_path_string(str(adapter_path))
+    return VisualSwitchConfig(
+        mode=mode,
+        teacher_projector=teacher_projector,
+        allow_fallback_adapter=allow_fallback_adapter,
+        adapter_path=adapter_path,
+    )
 
 
 def _build_evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:

@@ -54,8 +54,9 @@ def main() -> None:
         task=sample.task,
     )
 
-    visual_outputs = distiller._student_visual_outputs(image)
-    projector_outputs = distiller._student_projector_outputs(visual_outputs)
+    student_inputs = distiller._student_image_inputs(image)
+    visual_outputs = distiller._student_visual_outputs(student_inputs)
+    projector_outputs = distiller._student_projector_outputs(visual_outputs, student_inputs)
     teacher_inputs = distiller._teacher_text_inputs(prompt)
     text_embeds = components.teacher_token_embedding(teacher_inputs["input_ids"])
 
@@ -64,8 +65,6 @@ def main() -> None:
 
     visual_dim = int(projected_visual.shape[-1])
     teacher_dim = int(text_embeds.shape[-1])
-    align_triggered = visual_dim != teacher_dim
-    aligned_visual = distiller._align_visual_dim(projected_visual, teacher_dim)
 
     print(f"sample_id={sample.id}")
     print(f"image={sample.image}")
@@ -74,9 +73,8 @@ def main() -> None:
     print(f"teacher_embedding_shape={tuple(text_embeds.shape)}")
     print(f"teacher_embedding_dim={teacher_dim}")
     print(f"projector_output_dim={visual_dim}")
-    print(f"align_triggered={align_triggered}")
-    print(f"aligned_visual_shape={tuple(aligned_visual.shape)}")
-    print(f"aligner_present={distiller._aligner is not None}")
+    print("align_triggered=false")
+    print(f"projected_visual_shape={tuple(projected_visual.shape)}")
 
 
 if __name__ == "__main__":

@@ -54,6 +54,8 @@ def build_vlm_data_collator(processor, *, logits_fields=("teacher_logits", "swit
 
 class VlmDataCollator:
     """Pad multimodal features; keep cached logits as per-sample payloads."""
+    _SKIP_KEYS = frozenset({"prompt_token_len"})
+
     def __init__(
         self,
         pad_token_id: int = 0,

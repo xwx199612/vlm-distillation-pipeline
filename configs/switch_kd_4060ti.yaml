@@ -66,7 +66,6 @@ distillation:
   # SmolVLM2-2.2B (student) + Qwen2.5-VL-7B (teacher) 的常見 component path。
   # 若換模型，請用 model.named_modules() 確認後再改。
   student_vision_path: model.vision_model
-  student_projector_path: model.connector
   teacher_lm_path: language_model
   teacher_token_embedding_path: get_input_embeddings
   teacher_lm_head_path: lm_head
@@ -77,6 +76,13 @@ distillation:
   align_kd_logits_to_answer: true
   # Qwen teacher 與 SmolVLM student 詞表不同時，DBiLD/VSD 會自動跳過，只保留 LM loss。
   skip_kd_on_vocab_mismatch: true
+  switch_kd:
+    enabled: true
+    visual_switch:
+      mode: adapter_to_teacher_projector
+      teacher_projector: native
+      allow_fallback_adapter: true
+      adapter_path: model.connector
 
 evaluation:
   output_path: outputs/switch_kd_eval_report.json

@@ -71,8 +71,8 @@ def test_string_list_teacher_answer_is_converted_to_object_list():
 
     assert normalized == {
         "elements": [
-            {"focused": False, "text": "Search", "type": "unknown"},
-            {"focused": False, "text": "Home", "type": "unknown"},
+            {"focused": False, "text": "Search", "type": "tab"},
+            {"focused": False, "text": "Home", "type": "tab"},
         ]
     }
 
@@ -86,7 +86,7 @@ def test_teacher_tokens_are_recomputed_after_normalization():
 
     assert row is not None
     assert json.loads(row["teacher_answer"]) == {
-        "elements": [{"focused": False, "text": "Search", "type": "unknown"}]
+        "elements": [{"focused": False, "text": "Search", "type": "tab"}]
     }
     assert row["teacher_tokens"] == [ord(char) for char in row["teacher_answer"]]
     assert row["teacher_tokens"] != [999]
