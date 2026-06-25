@@ -83,6 +83,7 @@ def main() -> None:
             max_samples=config.data.max_samples,
             decode_tokens=decoder,
             require_teacher_logits=require_logits,
+            logits_field=config.distillation.teacher_logits_field,
         )
         _print_teacher_validation_summary(summary)
         if summary["invalid_rows"]:

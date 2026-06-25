@@ -35,6 +35,7 @@ ALLOWED_ELEMENT_TYPES = {
 class _TeacherRowReport:
     valid: bool
     reason: str | None
+    decode_error: str | None
     valid_json: bool
     schema_valid: bool
     string_list_row: bool
@@ -54,6 +55,7 @@ def validate_teacher_output_file(
     decode_tokens: DecodeTokens | None = None,
     require_teacher_logits: bool = False,
     bad_limit: int = 5,
+    logits_field: str = "teacher_logits",
 ) -> dict[str, Any]:
     rows = read_jsonl(path, max_samples=max_samples)
     summary: dict[str, Any] = {
@@ -83,6 +85,7 @@ def validate_teacher_output_file(
             row,
             decode_tokens=decode_tokens,
             require_teacher_logits=require_teacher_logits,
+            logits_field=logits_field,
         )
 
         if report.valid_json:
@@ -208,31 +211,6 @@ def _analyze_teacher_row(
         )
 
     answer_token_match = False
-    if decode_tokens is not None:
-        try:
-            decoded = _strip_special_tokens(decode_tokens(tokens))
-            canonical_answer = _canonicalize_teacher_answer(_strip_special_tokens(raw_answer))
-            canonical_decoded = _canonicalize_teacher_answer(decoded)
-            answer_token_match = canonical_answer == canonical_decoded
-            if not answer_token_match and not require_teacher_logits:
-                return _report(
-                    False,
-                    "decoded teacher_tokens do not match teacher_answer",
-                    valid_json=valid_json,
-                    schema_valid=True,
-                    string_list_row=string_list_row,
-                    answer_token_match=False,
-                )
-        except Exception as exc:  # noqa: BLE001
-            return _report(
-                False,
-                str(exc),
-                valid_json=valid_json,
-                schema_valid=True,
-                string_list_row=string_list_row,
-                answer_token_match=False,
-            )
-
     logits_present = row.get(logits_field) is not None
     logits_report = _validate_teacher_logits_payload(
         row,
@@ -256,9 +234,51 @@ def _analyze_teacher_row(
             vocab_mismatch=logits_report.vocab_mismatch,
         )
 
+    decode_error: str | None = None
+    if decode_tokens is not None:
+        try:
+            decoded = _strip_special_tokens(decode_tokens(tokens))
+            canonical_answer = _canonicalize_teacher_answer(_strip_special_tokens(raw_answer))
+            canonical_decoded = _canonicalize_teacher_answer(decoded)
+            answer_token_match = canonical_answer == canonical_decoded
+            if not answer_token_match and not require_teacher_logits:
+                return _report(
+                    False,
+                    "decoded teacher_tokens do not match teacher_answer",
+                    valid_json=valid_json,
+                    schema_valid=True,
+                    string_list_row=string_list_row,
+                    answer_token_match=False,
+                    token_identity_match=logits_report.token_identity_match,
+                    teacher_logits_present=logits_present,
+                    valid_teacher_logits=logits_report.valid_teacher_logits,
+                    logits_length_match=logits_report.logits_length_match,
+                    full_sequence_logits=logits_report.full_sequence_logits,
+                    vocab_mismatch=logits_report.vocab_mismatch,
+                )
+        except Exception as exc:  # noqa: BLE001
+            decode_error = str(exc)
+            if not require_teacher_logits:
+                return _report(
+                    False,
+                    decode_error,
+                    decode_error=decode_error,
+                    valid_json=valid_json,
+                    schema_valid=True,
+                    string_list_row=string_list_row,
+                    answer_token_match=False,
+                    token_identity_match=logits_report.token_identity_match,
+                    teacher_logits_present=logits_present,
+                    valid_teacher_logits=logits_report.valid_teacher_logits,
+                    logits_length_match=logits_report.logits_length_match,
+                    full_sequence_logits=logits_report.full_sequence_logits,
+                    vocab_mismatch=logits_report.vocab_mismatch,
+                )
+
     return _report(
         True,
         None,
+        decode_error=decode_error,
         valid_json=valid_json,
         schema_valid=True,
         string_list_row=string_list_row,
@@ -527,6 +547,7 @@ def _report(
     valid: bool,
     reason: str | None,
     *,
+    decode_error: str | None = None,
     valid_json: bool = False,
     schema_valid: bool = False,
     string_list_row: bool = False,
@@ -541,6 +562,7 @@ def _report(
     return _TeacherRowReport(
         valid=valid,
         reason=reason,
+        decode_error=decode_error,
         valid_json=valid_json,
         schema_valid=schema_valid,
         string_list_row=string_list_row,

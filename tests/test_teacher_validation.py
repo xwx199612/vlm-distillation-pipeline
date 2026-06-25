@@ -16,6 +16,10 @@ def _mismatching_decode(_tokens: list[int]) -> str:
     return '{"elements":[{"text":"Search","type":"tab","focused":true}]}'
 
 
+def _failing_decode(_tokens: list[int]) -> str:
+    raise ValueError("teacher_answer is not valid JSON")
+
+
 def _logits(length: int) -> dict:
     return {
         "indices": [[[0] for _ in range(length)]],
@@ -59,6 +63,17 @@ def test_teacher_forced_canonical_row_passes_with_decode_mismatch():
         _row(),
         require_teacher_logits=True,
         decode_tokens=_mismatching_decode,
+    )
+
+    assert valid is True
+    assert reason is None
+
+
+def test_teacher_forced_canonical_row_passes_with_decode_error_when_logits_validate():
+    valid, reason = validate_teacher_row(
+        _row(),
+        require_teacher_logits=True,
+        decode_tokens=_failing_decode,
     )
 
     assert valid is True
@@ -136,3 +151,55 @@ def test_validate_teacher_output_file_reports_token_identity_match_rows(tmp_path
     assert summary["answer_token_match_rows"] == 0
     assert summary["answer_token_mismatch_rows"] == 1
     assert summary["invalid_rows"] == 1
+
+
+def test_validate_teacher_output_file_keeps_decode_error_diagnostic_non_fatal_when_logits_validate(tmp_path: Path):
+    summary = validate_teacher_output_file(
+        _write_rows(tmp_path, [_row(tokens=[11, 22, 33])]),
+        decode_tokens=_failing_decode,
+        require_teacher_logits=True,
+    )
+
+    assert summary["valid_json_rows"] == 1
+    assert summary["schema_valid_rows"] == 1
+    assert summary["rows_with_teacher_logits"] == 1
+    assert summary["valid_teacher_logits_rows"] == 1
+    assert summary["logits_length_match_rows"] == 1
+    assert summary["token_identity_match_rows"] == 1
+    assert summary["answer_token_mismatch_rows"] == 0
+    assert summary["invalid_rows"] == 0
+
+
+def test_validate_teacher_output_file_fails_on_decode_error_without_required_logits(tmp_path: Path):
+    summary = validate_teacher_output_file(
+        _write_rows(tmp_path, [_row(tokens=[11, 22, 33])]),
+        decode_tokens=_failing_decode,
+        require_teacher_logits=False,
+    )
+
+    assert summary["valid_json_rows"] == 1
+    assert summary["schema_valid_rows"] == 1
+    assert summary["invalid_rows"] == 1
+    assert summary["bad_rows"][0]["reason"] == "teacher_answer is not valid JSON"
+
+
+def test_validate_teacher_output_file_uses_configurable_logits_field(tmp_path: Path):
+    row = _row(tokens=[7, 8, 9])
+    row["cached_teacher_logits"] = row.pop("teacher_logits")
+    row["cached_teacher_logits_format"] = row.pop("teacher_logits_format")
+    row["cached_teacher_logits_vocab_size"] = row.pop("teacher_logits_vocab_size")
+    row["cached_teacher_logits_aligned_to_answer"] = row.pop("teacher_logits_aligned_to_answer")
+    row["cached_teacher_logits_token_identity_match"] = row.pop("teacher_logits_token_identity_match")
+    row["cached_teacher_logits_answer_token_ids"] = row.pop("teacher_logits_answer_token_ids")
+
+    summary = validate_teacher_output_file(
+        _write_rows(tmp_path, [row]),
+        decode_tokens=_failing_decode,
+        require_teacher_logits=True,
+        logits_field="cached_teacher_logits",
+    )
+
+    assert summary["rows_with_teacher_logits"] == 1
+    assert summary["valid_teacher_logits_rows"] == 1
+    assert summary["token_identity_match_rows"] == 1
+    assert summary["invalid_rows"] == 0
