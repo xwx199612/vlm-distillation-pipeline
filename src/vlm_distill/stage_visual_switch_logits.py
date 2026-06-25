@@ -1214,6 +1214,30 @@ def _infer_module_input_dim(module, *, model=None, module_label: str) -> int | N
             return int(weight.shape[-1])
     if model is not None:
         config = getattr(model, "config", None)
+        ln_q = getattr(module, "ln_q", None)
+        normalized_shape = getattr(ln_q, "normalized_shape", None)
+        if normalized_shape is not None:
+            if isinstance(normalized_shape, int):
+                return int(normalized_shape)
+            if isinstance(normalized_shape, (tuple, list)) and normalized_shape:
+                return int(normalized_shape[-1])
+
+        module_config = getattr(module, "config", None)
+        hidden_size = getattr(module_config, "hidden_size", None) if module_config is not None else None
+        if hidden_size is not None:
+            return int(hidden_size)
+
+        for subconfig_name in ("vision_config", "visual_config"):
+            subconfig = getattr(config, subconfig_name, None) if config is not None else None
+            hidden_size = getattr(subconfig, "hidden_size", None) if subconfig is not None else None
+            if hidden_size is not None:
+                return int(hidden_size)
+        for subconfig_name in ("vision_config", "visual_config"):
+            subconfig = getattr(config, subconfig_name, None) if config is not None else None
+            embed_dim = getattr(subconfig, "embed_dim", None) if subconfig is not None else None
+            if embed_dim is not None:
+                return int(embed_dim)
+
         for attr in ("hidden_size", "mm_hidden_size", "vision_hidden_size"):
             value = getattr(config, attr, None) if config is not None else None
             if value is not None:

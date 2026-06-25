@@ -12,6 +12,7 @@ from vlm_distill.data_manifest import VlmSample
 from vlm_distill.stage_visual_switch_logits import (
     VisualSwitchDistiller,
     _load_switch_base_rows,
+    _infer_module_input_dim,
     _validate_switch_logits_row,
     extract_student_vision_hidden_states,
     get_teacher_visual_projector_or_merger,
@@ -70,6 +71,20 @@ class _FakeQwenVisual(torch.nn.Module):
         return torch.full((1, 12), 9.0)
 
 
+class _FakeQwenMerger(torch.nn.Module):
+    def __init__(self, normalized_shape: int):
+        super().__init__()
+        self.ln_q = torch.nn.LayerNorm(normalized_shape)
+
+
+class _FakeOpaqueMerger(torch.nn.Module):
+    pass
+
+
+class _FakeTeacherConfig(SimpleNamespace):
+    pass
+
+
 def test_paper_mode_config_loads_correctly():
     config = load_config(Path("configs/parsing_switch_kd.yaml"))
 
@@ -113,6 +128,37 @@ def test_teacher_projector_resolution_prefers_qwen_visual_merger():
     projector = get_teacher_visual_projector_or_merger(teacher_model)
 
     assert projector is teacher_model.model.visual.merger
+
+
+def test_infer_module_input_dim_uses_qwen_merger_ln_q_normalized_shape():
+    fake_merger = _FakeQwenMerger(1280)
+    fake_teacher = SimpleNamespace(config=_FakeTeacherConfig(hidden_size=3584))
+
+    inferred = _infer_module_input_dim(
+        fake_merger,
+        model=fake_teacher,
+        module_label="teacher projector/merger",
+    )
+
+    assert inferred == 1280
+
+
+def test_infer_module_input_dim_prefers_vision_hidden_size_over_text_hidden_size():
+    fake_merger = _FakeOpaqueMerger()
+    fake_teacher = SimpleNamespace(
+        config=_FakeTeacherConfig(
+            hidden_size=3584,
+            vision_config=SimpleNamespace(hidden_size=1280),
+        )
+    )
+
+    inferred = _infer_module_input_dim(
+        fake_merger,
+        model=fake_teacher,
+        module_label="teacher projector/merger",
+    )
+
+    assert inferred == 1280
 
 
 def test_paper_mode_rejects_full_teacher_visual_tower(tmp_path: Path):
