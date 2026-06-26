@@ -58,6 +58,7 @@ class HuggingFaceStudent:
         self.config = config
         try:
             import torch
+            from peft import PeftModel
             from transformers import AutoProcessor, BitsAndBytesConfig
             try:
                 from transformers import AutoModelForImageTextToText as AutoModelForVLM
@@ -95,6 +96,15 @@ class HuggingFaceStudent:
 
         model_kwargs["local_files_only"] = True
         self.model = AutoModelForVLM.from_pretrained(model_path, **model_kwargs)
+        if _should_load_prediction_adapter(config):
+            adapter_path = _resolve_prediction_adapter_path(config)
+            self.model = PeftModel.from_pretrained(
+                self.model,
+                str(adapter_path),
+                local_files_only=True,
+            )
+            if config.student.merge_adapter:
+                self.model = self.model.merge_and_unload()
         self.model.eval()
 
     def answer(self, sample: VlmSample) -> dict:
@@ -145,6 +155,14 @@ def build_student_backend(config: PipelineConfig) -> StudentBackend:
     if config.student.model_name.startswith("mock-"):
         return MockStudent()
     return HuggingFaceStudent(config)
+
+
+def _should_load_prediction_adapter(config: PipelineConfig) -> bool:
+    return config.student.load_adapter or config.student.merge_adapter
+
+
+def _resolve_prediction_adapter_path(config: PipelineConfig) -> Path:
+    return config.student.inference_adapter_path or config.student.adapter_dir
 
 
 def create_student_predictions(config: PipelineConfig, samples: list[VlmSample]) -> Path:

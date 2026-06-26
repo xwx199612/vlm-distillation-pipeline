@@ -45,10 +45,13 @@ class StudentConfig:
     model_name: str
     output_dir: Path
     adapter_dir: Path
+    inference_adapter_path: Path | None = None
     inference_model_path: str | None = None
     device_map: str | None = "auto"
     attn_implementation: str = "sdpa"
     use_lora: bool = True
+    load_adapter: bool = False
+    merge_adapter: bool = False
     lora_rank: int = 16
     lora_alpha: int = 32
     lora_dropout: float = 0.05
@@ -237,6 +240,11 @@ def _build_student_config(raw: dict[str, Any]) -> StudentConfig:
     values = dict(raw)
     for key in ("output_dir", "adapter_dir"):
         values[key] = remap_output_path(Path(values[key]))
+    inference_adapter_path = values.get("inference_adapter_path")
+    if inference_adapter_path:
+        values["inference_adapter_path"] = remap_output_path(Path(inference_adapter_path))
+    else:
+        values["inference_adapter_path"] = None
     if values.get("inference_model_path") is not None:
         values["inference_model_path"] = remap_output_path_string(values["inference_model_path"])
     return StudentConfig(**values)
