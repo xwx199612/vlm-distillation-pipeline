@@ -348,7 +348,10 @@ def _load_student_model(config: PipelineConfig, model_path: str | None = None):
     if resolved_device_map is not None:
         model_kwargs["device_map"] = resolved_device_map
     apply_attn_implementation(model_kwargs, config.student.attn_implementation)
-    if config.student.quantization == "4bit":
+
+    if config.student.quantization == "none":
+        model_kwargs["torch_dtype"] = torch.bfloat16
+    elif config.student.quantization == "4bit":
         from transformers import BitsAndBytesConfig
 
         model_kwargs["quantization_config"] = BitsAndBytesConfig(
