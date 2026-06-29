@@ -1,7 +1,7 @@
 seed: 42
 options:
   task_name: parsing
-  quality: 480p
+  quality: 1080p
   teacher_quantization: 8bit
   student_quantization: 4bit
 data:
@@ -19,6 +19,7 @@ teacher:
   device_map: auto
   torch_dtype: float16
   quantization: '{teacher_quantization}'
+  attn_implementation: sdpa
   temperature: 0.0
   max_new_tokens: 512
   image_resize: '{quality}'
@@ -37,6 +38,7 @@ student:
   - v_proj
   - o_proj
   quantization: '{student_quantization}'
+  attn_implementation: sdpa
 training:
   epochs: 3
   batch_size: 1
@@ -216,7 +218,7 @@ distillation:
   teacher_token_embedding_path: model.language_model.embed_tokens
   teacher_lm_head_path: lm_head
   switch_cache_student_visual: true
-  student_visual_cache_dir: outputs/switch-kd/student_visual_cache
+  student_visual_cache_dir: outputs/switch-kd/{task_name}_student_visual_cache_{response_profile}
   keep_student_visual_cache_on_cpu: true
   visual_token_placeholder: <|image_pad|>
   max_cached_logits_vocab: 4096

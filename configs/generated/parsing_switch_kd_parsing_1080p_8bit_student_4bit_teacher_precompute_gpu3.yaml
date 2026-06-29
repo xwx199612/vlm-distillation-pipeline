@@ -1,39 +1,28 @@
 seed: 42
-
 options:
   task_name: parsing
   quality: 1080p
   teacher_quantization: 8bit
   student_quantization: 4bit
-  # Derived automatically:
-  # label_profile = {quality}_{teacher_quantization}
-  # response_profile = {quality}_{teacher_quantization}_student_{student_quantization}
-
 data:
-  manifest_path: outputs/switch-kd/{task_name}_manifest.jsonl
+  manifest_path: outputs/switch-kd/shards/parsing_1080p_8bit_student_4bit/parsing_manifest_shard3.jsonl
   distill_path: outputs/switch-kd/{task_name}_switch_kd_{response_profile}.jsonl
-  # Canonical unified teacher output. Rows contain teacher_answer,
-  # teacher_tokens, and teacher_logits when distillation.teacher_logits=true.
-  label_path: outputs/switch-kd/{task_name}_teacher_labels_{label_profile}.jsonl
-  # Deprecated: teacher_logits_path is intentionally omitted from this workflow.
-  # Legacy configs may still set it, but Switch-KD now reads teacher logits from label_path.
+  label_path: outputs/switch-kd/shards/parsing_1080p_8bit_student_4bit/parsing_teacher_labels_shard3.jsonl
   switch_logits_path: outputs/switch-kd/{task_name}_switch_logits_{response_profile}.jsonl
   eval_path: outputs/switch-kd/{task_name}_switch_kd_{response_profile}.jsonl
   image_dir: /home/phison/vlm_distill/TV_data
   image_root: .
-  max_samples:
-
+  max_samples: null
 teacher:
   backend: hf
   model_name: Qwen/Qwen2.5-VL-7B-Instruct
   device_map: auto
   torch_dtype: float16
-  quantization: "{teacher_quantization}"
+  quantization: '{teacher_quantization}'
   attn_implementation: sdpa
   temperature: 0.0
   max_new_tokens: 512
-  image_resize: "{quality}"
-
+  image_resize: '{quality}'
 student:
   model_name: Qwen/Qwen2.5-VL-3B-Instruct
   output_dir: outputs/switch-kd/{task_name}_switch_kd_{response_profile}
@@ -44,112 +33,172 @@ student:
   lora_alpha: 32
   lora_dropout: 0.05
   target_modules:
-    - q_proj
-    - k_proj
-    - v_proj
-    - o_proj
-  quantization: "{student_quantization}"
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  quantization: '{student_quantization}'
   attn_implementation: sdpa
-
 training:
   epochs: 3
   batch_size: 1
   gradient_accumulation_steps: 16
   learning_rate: 0.0001
   warmup_ratio: 0.03
-  max_steps:
+  max_steps: null
   log_every: 50
   save_every: 1000
-  mixed_precision: bf16           # 伺服器 GPU 支援 bf16 時 否則為 fp16
-  gradient_checkpointing: false   # 只有 VRAM 夠時才關
-  image_resize: "{quality}"
+  mixed_precision: bf16
+  gradient_checkpointing: false
+  image_resize: '{quality}'
   max_length: 4096
   freeze_vision_tower: true
   mask_prompt_labels: true
-
-
 distillation:
   method: switch_kd
-  # Unified teacher precompute: label writes teacher_answer, teacher_tokens,
-  # and answer-only teacher_logits together. Set false for answer/tokens only.
   teacher_logits: true
   confidence_weighting: true
   min_teacher_confidence: 0.35
-  prompt_template: |
-    You are an Android TV GUI parsing assistant.
+  prompt_template: 'You are an Android TV GUI parsing assistant.
+
 
     Task:
+
     {query}
-    
+
+
     Identify all visible interactive UI elements in this screenshot.
-    
+
+
     Interactive elements include:
-    
+
+
     * tabs
+
     * buttons
+
     * app icons
+
     * app tiles
+
     * menu items
+
     * carousel tiles
+
     * focused or highlighted items
+
     * toggles or switches
+
     * search boxes or text inputs
+
     * clickable text links
+
     * settings, account, search, or navigation icons
-    
+
+
     Exclude:
-    
+
+
     * movie descriptions
+
     * recommendation summaries
+
     * long informational text
+
     * advertisements
+
     * decorative or non-interactive text
-    
+
+
     Rules:
-    
+
+
     * Prefer recall over brevity.
+
     * Do not return only the top navigation bar.
-    * Include every visible app icon, tile, card, tab, button, menu item, and focused item.
+
+    * Include every visible app icon, tile, card, tab, button, menu item, and focused
+    item.
+
     * If there are multiple rows or carousels, inspect all visible rows.
+
     * Mark the focused or highlighted element with `"focused": true`.
+
     * Use `"focused": false` for all other elements.
-    * If the text is unreadable but the element is clearly interactive, use a short visual name.
-    * Each element must be an object with exactly these fields: `"text"`, `"type"`, and `"focused"`.
-    
+
+    * If the text is unreadable but the element is clearly interactive, use a short
+    visual name.
+
+    * Each element must be an object with exactly these fields: `"text"`, `"type"`,
+    and `"focused"`.
+
+
     The `"type"` field is a closed enum.
+
     For every element, `"type"` MUST be exactly one of:
-    ["tab", "button", "app_icon", "app_tile", "menu_item", "tile", "toggle", "input", "icon", "link", "other", "unknown"]
-    
+
+    ["tab", "button", "app_icon", "app_tile", "menu_item", "tile", "toggle", "input",
+    "icon", "link", "other", "unknown"]
+
+
     Do not invent new type names.
+
     Do not output values such as:
-    "card", "movie", "navigation", "nav", "search_bar", "setting", "settings", "text", "label", "image", "poster", "banner", or "carousel".
-    
+
+    "card", "movie", "navigation", "nav", "search_bar", "setting", "settings", "text",
+    "label", "image", "poster", "banner", or "carousel".
+
+
     Map ambiguous UI elements to the closest allowed type:
-    
+
+
     * card, movie, poster, banner, recommendation, content, carousel -> "tile"
+
     * app, application -> "app_icon"
+
     * navigation, nav -> "tab"
+
     * search, search_bar, search_box -> "input"
+
     * setting, settings -> "icon"
+
     * text, label, image -> "other"
+
     * if unsure -> "other"
-    
+
+
     Return raw JSON only.
+
     Do not explain.
+
     Do not use markdown.
+
     Do not include comments.
+
     Do not include trailing commas.
-    
+
+
     Use this schema:
+
     {{
+
     "elements": [
+
     {{
+
     "text": "...",
+
     "type": "tab",
+
     "focused": true
+
     }}
+
     ]
+
     }}
+
+    '
   lm_loss_weight: 1.0
   dbild_loss_weight: 0.5
   vsd_loss_weight: 0.5
@@ -171,7 +220,7 @@ distillation:
   switch_cache_student_visual: true
   student_visual_cache_dir: outputs/switch-kd/{task_name}_student_visual_cache_{response_profile}
   keep_student_visual_cache_on_cpu: true
-  visual_token_placeholder: "<|image_pad|>"
+  visual_token_placeholder: <|image_pad|>
   max_cached_logits_vocab: 4096
   align_kd_logits_to_answer: true
   skip_kd_on_vocab_mismatch: false
@@ -181,9 +230,8 @@ distillation:
       mode: paper
       teacher_projector: native
       allow_fallback_adapter: false
-
 evaluation:
   output_path: outputs/switch-kd/{task_name}_switch_kd_{response_profile}/eval_report.json
   metrics:
-    - exact_match
-    - token_f1
+  - exact_match
+  - token_f1

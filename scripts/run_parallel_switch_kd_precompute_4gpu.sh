@@ -98,13 +98,88 @@ unset PYTHONPATH || true
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 NUM_SHARDS=4
-BASE_CONFIG="configs/parsing_switch_kd.yaml"
-MANIFEST_PATH="outputs/switch-kd/parsing_manifest.jsonl"
-SHARD_DIR="outputs/switch-kd/shards"
+BASE_CONFIG="${BASE_CONFIG:-configs/parsing_switch_kd.yaml}"
 GENERATED_CONFIG_DIR="configs/generated"
+export BASE_CONFIG NUM_SHARDS GENERATED_CONFIG_DIR
 
-FINAL_LABEL_PATH="outputs/switch-kd/parsing_teacher_labels_480p_8bit.jsonl"
-FINAL_SWITCH_LOGITS_PATH="outputs/switch-kd/parsing_switch_logits_480p_8bit_student_4bit.jsonl"
+eval "$(
+  python - <<'PY'
+from __future__ import annotations
+
+import os
+import shlex
+from pathlib import Path
+
+import yaml
+
+base_config_path = Path(os.environ["BASE_CONFIG"])
+if not base_config_path.exists():
+    raise SystemExit(f"ERROR: base config not found: {base_config_path}")
+
+with base_config_path.open("r", encoding="utf-8") as handle:
+    config = yaml.safe_load(handle)
+
+options = config.get("options", {})
+data = config.get("data", {})
+task_name = options.get("task_name")
+quality = options.get("quality")
+teacher_quantization = options.get("teacher_quantization")
+student_quantization = options.get("student_quantization")
+
+required = {
+    "options.task_name": task_name,
+    "options.quality": quality,
+    "options.teacher_quantization": teacher_quantization,
+    "options.student_quantization": student_quantization,
+    "data.manifest_path": data.get("manifest_path"),
+    "data.label_path": data.get("label_path"),
+    "data.switch_logits_path": data.get("switch_logits_path"),
+}
+missing = [name for name, value in required.items() if value in (None, "")]
+if missing:
+    raise SystemExit(f"ERROR: missing required config values in {base_config_path}: {', '.join(missing)}")
+
+label_profile = f"{quality}_{teacher_quantization}"
+response_profile = f"{quality}_{teacher_quantization}_student_{student_quantization}"
+profile_slug = f"{task_name}_{response_profile}"
+
+replacements = {
+    "task_name": task_name,
+    "quality": quality,
+    "teacher_quantization": teacher_quantization,
+    "student_quantization": student_quantization,
+    "label_profile": label_profile,
+    "response_profile": response_profile,
+}
+
+def expand(value: str) -> str:
+    return value.format(**replacements)
+
+manifest_path = expand(str(data["manifest_path"]))
+final_label_path = expand(str(data["label_path"]))
+final_switch_logits_path = expand(str(data["switch_logits_path"]))
+shard_dir = f"outputs/switch-kd/shards/{profile_slug}"
+
+exports = {
+    "TASK_NAME": task_name,
+    "QUALITY": quality,
+    "TEACHER_QUANTIZATION": teacher_quantization,
+    "STUDENT_QUANTIZATION": student_quantization,
+    "LABEL_PROFILE": label_profile,
+    "RESPONSE_PROFILE": response_profile,
+    "MANIFEST_PATH": manifest_path,
+    "FINAL_LABEL_PATH": final_label_path,
+    "FINAL_SWITCH_LOGITS_PATH": final_switch_logits_path,
+    "PROFILE_SLUG": profile_slug,
+    "SHARD_DIR": shard_dir,
+}
+
+for key, value in exports.items():
+    print(f"export {key}={shlex.quote(str(value))}")
+PY
+)"
+
+export MANIFEST_PATH FINAL_LABEL_PATH FINAL_SWITCH_LOGITS_PATH PROFILE_SLUG SHARD_DIR
 
 mkdir -p "${SHARD_DIR}" "${GENERATED_CONFIG_DIR}"
 
@@ -113,11 +188,12 @@ split_manifest() {
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
-manifest_path = Path("outputs/switch-kd/parsing_manifest.jsonl")
-shard_dir = Path("outputs/switch-kd/shards")
-num_shards = 4
+manifest_path = Path(os.environ["MANIFEST_PATH"])
+shard_dir = Path(os.environ["SHARD_DIR"])
+num_shards = int(os.environ["NUM_SHARDS"])
 
 if not manifest_path.exists():
     raise SystemExit(f"ERROR: manifest not found: {manifest_path}")
@@ -186,16 +262,18 @@ generate_configs() {
   STAGE_NAME="${stage}" python - <<'PY'
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import yaml
 
-stage = __import__("os").environ["STAGE_NAME"]
+stage = os.environ["STAGE_NAME"]
 stage_slug = stage.replace("-", "_")
 
-base_config_path = Path("configs/parsing_switch_kd.yaml")
-generated_dir = Path("configs/generated")
-shard_dir = Path("outputs/switch-kd/shards")
+base_config_path = Path(os.environ["BASE_CONFIG"])
+generated_dir = Path(os.environ["GENERATED_CONFIG_DIR"])
+shard_dir = Path(os.environ["SHARD_DIR"])
+profile_slug = os.environ["PROFILE_SLUG"]
 
 with base_config_path.open("r", encoding="utf-8") as handle:
     base_config = yaml.safe_load(handle)
@@ -210,7 +288,7 @@ if distillation.get("teacher_logits") is not True:
         f"ERROR: base config must use distillation.teacher_logits=true: {base_config_path}"
     )
 
-for gpu_index in range(4):
+for gpu_index in range(int(os.environ["NUM_SHARDS"])):
     config_data = yaml.safe_load(yaml.safe_dump(base_config, sort_keys=False))
     config_data["data"]["manifest_path"] = str(
         shard_dir / f"parsing_manifest_shard{gpu_index}.jsonl"
@@ -226,7 +304,7 @@ for gpu_index in range(4):
         config_data["distillation"]["student_visual_cache_dir"] = str(
             shard_dir / f"student_visual_cache_shard{gpu_index}"
         )
-    output_path = generated_dir / f"parsing_switch_kd_{stage_slug}_gpu{gpu_index}.yaml"
+    output_path = generated_dir / f"parsing_switch_kd_{profile_slug}_{stage_slug}_gpu{gpu_index}.yaml"
     with output_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(config_data, handle, sort_keys=False, allow_unicode=True)
     print(f"[generate-config] {output_path}")
@@ -257,12 +335,12 @@ import os
 from pathlib import Path
 
 stage = os.environ["STAGE_NAME"]
-shard_dir = Path("outputs/switch-kd/shards")
+shard_dir = Path(os.environ["SHARD_DIR"])
 
 required: list[Path] = []
 if stage == "switch-logits":
     required = []
-    for gpu_index in range(4):
+    for gpu_index in range(int(os.environ["NUM_SHARDS"])):
         required.append(shard_dir / f"parsing_teacher_labels_shard{gpu_index}.jsonl")
 
 missing = [path for path in required if not path.exists()]
@@ -283,19 +361,25 @@ print_safety_checks() {
   python - <<'PY'
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import yaml
 
-with Path("configs/parsing_switch_kd.yaml").open("r", encoding="utf-8") as handle:
+base_config_path = Path(os.environ["BASE_CONFIG"])
+with base_config_path.open("r", encoding="utf-8") as handle:
     config = yaml.safe_load(handle)
 distillation = config.get("distillation", {})
 data = config.get("data", {})
 teacher_logits = bool(distillation.get("teacher_logits", True))
 label_path = data.get("label_path")
-base_config_path = Path("configs/parsing_switch_kd.yaml")
 mode = "unified"
 print(f"base config path: {base_config_path}")
+print(f"manifest path: {os.environ['MANIFEST_PATH']}")
+print(f"profile slug: {os.environ['PROFILE_SLUG']}")
+print(f"shard dir: {os.environ['SHARD_DIR']}")
+print(f"final label path: {os.environ['FINAL_LABEL_PATH']}")
+print(f"final switch logits path: {os.environ['FINAL_SWITCH_LOGITS_PATH']}")
 print(f"method: {distillation.get('method')}")
 print(f"teacher_logits: {str(teacher_logits).lower()}")
 print(f"canonical teacher output path is label_path: {label_path}")
@@ -325,10 +409,12 @@ PY
   python - <<'PY'
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
-manifest_path = Path("outputs/switch-kd/parsing_manifest.jsonl")
-shard_dir = Path("outputs/switch-kd/shards")
+manifest_path = Path(os.environ["MANIFEST_PATH"])
+shard_dir = Path(os.environ["SHARD_DIR"])
+num_shards = int(os.environ["NUM_SHARDS"])
 
 total = 0
 with manifest_path.open("r", encoding="utf-8") as handle:
@@ -337,7 +423,7 @@ with manifest_path.open("r", encoding="utf-8") as handle:
             total += 1
 print(f"{manifest_path}: {total}")
 
-for gpu_index in range(4):
+for gpu_index in range(num_shards):
     shard_path = shard_dir / f"parsing_manifest_shard{gpu_index}.jsonl"
     count = 0
     with shard_path.open("r", encoding="utf-8") as handle:
@@ -350,7 +436,7 @@ PY
   for gpu_index in 0 1 2 3; do
     echo "gpu=${gpu_index}"
     echo "  manifest=${SHARD_DIR}/parsing_manifest_shard${gpu_index}.jsonl"
-    echo "  config=${GENERATED_CONFIG_DIR}/parsing_switch_kd_${stage_slug}_gpu${gpu_index}.yaml"
+    echo "  config=${GENERATED_CONFIG_DIR}/parsing_switch_kd_${PROFILE_SLUG}_${stage_slug}_gpu${gpu_index}.yaml"
     echo "  label_path=${SHARD_DIR}/parsing_teacher_labels_shard${gpu_index}.jsonl"
     echo "  canonical_teacher_output_path=label_path"
     echo "  unified teacher precompute enabled"
@@ -368,7 +454,7 @@ print_stage_commands() {
 
   echo "=== planned commands ==="
   for gpu_index in 0 1 2 3; do
-    echo "CUDA_VISIBLE_DEVICES=${gpu_index} python -m vlm_distill.cli ${stage} --config ${GENERATED_CONFIG_DIR}/parsing_switch_kd_${stage_slug}_gpu${gpu_index}.yaml > ${SHARD_DIR}/${stage_slug}_gpu${gpu_index}.log 2>&1"
+    echo "CUDA_VISIBLE_DEVICES=${gpu_index} python -m vlm_distill.cli ${stage} --config ${GENERATED_CONFIG_DIR}/parsing_switch_kd_${PROFILE_SLUG}_${stage_slug}_gpu${gpu_index}.yaml > ${SHARD_DIR}/${stage_slug}_gpu${gpu_index}.log 2>&1"
   done
 }
 
@@ -379,12 +465,13 @@ render_stage_progress_snapshot() {
 from __future__ import annotations
 
 import sys
+import os
 from pathlib import Path
 
 stage = sys.argv[1]
 pids = [int(arg) for arg in sys.argv[2:]]
 stage_slug = stage.replace("-", "_")
-shard_dir = Path("outputs/switch-kd/shards")
+shard_dir = Path(os.environ["SHARD_DIR"])
 
 if stage == "teacher-precompute":
     output_template = "parsing_teacher_labels_shard{gpu}.jsonl"
@@ -502,7 +589,7 @@ run_stage() {
   trap 'monitor_stage_progress_stop' EXIT
 
   for gpu_index in 0 1 2 3; do
-    local config_path="${GENERATED_CONFIG_DIR}/parsing_switch_kd_${stage_slug}_gpu${gpu_index}.yaml"
+    local config_path="${GENERATED_CONFIG_DIR}/parsing_switch_kd_${PROFILE_SLUG}_${stage_slug}_gpu${gpu_index}.yaml"
     local log_path="${SHARD_DIR}/${stage_slug}_gpu${gpu_index}.log"
     gpu_logs+=("${log_path}")
     echo "Launching stage=${stage} gpu=${gpu_index}: ${config_path} -> ${log_path}"
@@ -547,15 +634,15 @@ import os
 from pathlib import Path
 
 stage = os.environ["STAGE_NAME"]
-shard_dir = Path("outputs/switch-kd/shards")
-manifest_path = Path("outputs/switch-kd/parsing_manifest.jsonl")
+shard_dir = Path(os.environ["SHARD_DIR"])
+manifest_path = Path(os.environ["MANIFEST_PATH"])
 
 if stage == "teacher-precompute":
     shard_template = "parsing_teacher_labels_shard{gpu}.jsonl"
-    final_output_path = Path("outputs/switch-kd/parsing_teacher_labels_480p_8bit.jsonl")
+    final_output_path = Path(os.environ["FINAL_LABEL_PATH"])
 elif stage == "switch-logits":
     shard_template = "parsing_switch_logits_shard{gpu}.jsonl"
-    final_output_path = Path("outputs/switch-kd/parsing_switch_logits_480p_8bit_student_4bit.jsonl")
+    final_output_path = Path(os.environ["FINAL_SWITCH_LOGITS_PATH"])
 else:
     raise SystemExit(f"ERROR: unsupported merge stage: {stage}")
 
@@ -573,13 +660,13 @@ def is_valid_logits_payload(payload: object) -> bool:
 def teacher_logits_enabled() -> bool:
     try:
         import yaml
-        with Path("configs/parsing_switch_kd.yaml").open("r", encoding="utf-8") as handle:
+        with Path(os.environ["BASE_CONFIG"]).open("r", encoding="utf-8") as handle:
             config = yaml.safe_load(handle)
         return bool(config.get("distillation", {}).get("teacher_logits", True))
     except Exception:
         return True
 
-for shard_index in range(4):
+for shard_index in range(int(os.environ["NUM_SHARDS"])):
     shard_path = shard_dir / shard_template.format(gpu=shard_index)
     if not shard_path.exists():
         raise SystemExit(f"ERROR: shard output file not found: {shard_path}")
