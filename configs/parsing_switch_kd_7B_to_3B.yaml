@@ -10,50 +10,48 @@ options:
   # response_profile = {quality}_{teacher_quantization}_student_{student_quantization}
 
 data:
-  manifest_path: outputs/switch-kd/{task_name}_manifest.jsonl
-  distill_path: outputs/switch-kd/{task_name}_switch_kd_{response_profile}.jsonl
+  manifest_path: outputs/switch-kd_debug/{task_name}_manifest.jsonl
+  distill_path: outputs/switch-kd_debug/{task_name}_switch_kd_{response_profile}.jsonl
   # Canonical unified teacher output. Rows contain teacher_answer,
   # teacher_tokens, and teacher_logits when distillation.teacher_logits=true.
-  label_path: outputs/switch-kd/{task_name}_teacher_labels_{label_profile}.jsonl
+  label_path: outputs/switch-kd_debug/{task_name}_teacher_labels_{label_profile}.jsonl
   # Deprecated: teacher_logits_path is intentionally omitted from this workflow.
   # Legacy configs may still set it, but Switch-KD now reads teacher logits from label_path.
-  switch_logits_path: outputs/switch-kd/{task_name}_switch_logits_{response_profile}.jsonl
-  eval_path: outputs/switch-kd/{task_name}_switch_kd_{response_profile}.jsonl
-  prediction_path: outputs/switch-kd/{task_name}_switch_kd_{response_profile}/student_predictions.jsonl
+  switch_logits_path: outputs/switch-kd_debug/{task_name}_switch_logits_{response_profile}.jsonl
+  eval_path: outputs/switch-kd_debug/{task_name}_switch_kd_{response_profile}.jsonl
+  prediction_path: outputs/switch-kd_debug/{task_name}_switch_kd_{response_profile}/student_predictions.jsonl
   image_dir: /home/phison/vlm_distill/TV_data
   image_root: .
   max_samples: 2
 
 teacher:
   backend: hf
-  model_name: /home/phison/vlm_distill/models/Qwen3-VL-32B-Instruct
+  model_name: /home/phison/vlm_distill/models/Qwen2.5-VL-7B-Instruct
   device_map: auto
-  torch_dtype: bfloat16
+  torch_dtype: float161
   quantization: "{teacher_quantization}"
   attn_implementation: sdpa
   temperature: 0.0
-  local_files_only: true
-  trust_remote_code: true
   max_new_tokens: 512
   image_resize: "{quality}"
 
 student:
   backend: hf
-  model_name: /home/phison/vlm_distill/models/Qwen3-VL-8B-Instruct
-  output_dir: outputs/switch-kd/{task_name}_switch_kd_{response_profile}
-  adapter_dir: outputs/switch-kd/{task_name}_switch_kd_{response_profile}/adapter
+  model_name: /home/phison/vlm_distill/models/Qwen2.5-VL-3B-Instruct
+  output_dir: outputs/switch-kd_debug/{task_name}_switch_kd_{response_profile}
+  adapter_dir: outputs/switch-kd_debug/{task_name}_switch_kd_{response_profile}/adapter
 
   # Prediction-time model/adapter controls.
   # Leave inference_model_path empty to load the base model from model_name.
   inference_model_path:
-  inference_adapter_path: outputs/switch-kd/{task_name}_switch_kd_{response_profile}/adapter
+  inference_adapter_path: outputs/switch-kd_debug/{task_name}_switch_kd_{response_profile}/adapter
   load_adapter: true
   merge_adapter: false
 
   device_map: auto
   use_lora: true
-  lora_rank: 32
-  lora_alpha: 64
+  lora_rank: 16
+  lora_alpha: 32
   lora_dropout: 0.05
   target_modules:
     - q_proj
@@ -61,15 +59,13 @@ student:
     - v_proj
     - o_proj
   quantization: "{student_quantization}"
-  local_files_only: true
-  trust_remote_code: true
   attn_implementation: sdpa
 
 training:
   epochs: 3
   batch_size: 1
-  gradient_accumulation_steps: 8
-  learning_rate: 1.0e-4
+  gradient_accumulation_steps: 16
+  learning_rate: 0.0001
   warmup_ratio: 0.03
   max_steps:
   log_every: 50
@@ -194,7 +190,7 @@ distillation:
   teacher_token_embedding_path: model.language_model.embed_tokens
   teacher_lm_head_path: lm_head
   switch_cache_student_visual: true
-  student_visual_cache_dir: outputs/switch-kd/{task_name}_student_visual_cache_{response_profile}
+  student_visual_cache_dir: outputs/switch-kd_debug/{task_name}_student_visual_cache_{response_profile}
   keep_student_visual_cache_on_cpu: true
   visual_token_placeholder: "<|image_pad|>"
   max_cached_logits_vocab: 4096
@@ -208,7 +204,7 @@ distillation:
       allow_fallback_adapter: false
 
 evaluation:
-  output_path: outputs/switch-kd/{task_name}_switch_kd_{response_profile}/eval_report.json
+  output_path: outputs/switch-kd_debug/{task_name}_switch_kd_{response_profile}/eval_report.json
   metrics:
     - exact_match
     - token_f1
