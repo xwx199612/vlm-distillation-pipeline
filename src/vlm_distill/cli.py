@@ -14,6 +14,7 @@ from .stage_student_prediction import create_student_predictions
 from .stage_teacher_precompute import create_teacher_precompute_dataset
 from .stage_student_training import train_student
 from .stage_visual_switch_logits import create_visual_switch_dataset
+from .teacher_label_stats import format_teacher_label_summary, summarize_teacher_label_file
 
 
 def main() -> None:
@@ -40,6 +41,8 @@ def main() -> None:
         command_parser.add_argument("--config", type=Path, required=True)
     validate_teacher_parser = subparsers.add_parser("validate-teacher")
     validate_teacher_parser.add_argument("--config", type=Path, required=True)
+    teacher_stats_parser = subparsers.add_parser("teacher-label-stats")
+    teacher_stats_parser.add_argument("--config", type=Path, required=True)
 
     validate_labels_parser = subparsers.add_parser(
         "validate-labels",
@@ -88,6 +91,14 @@ def main() -> None:
         _print_teacher_validation_summary(summary)
         if summary["invalid_rows"]:
             raise SystemExit(1)
+        return
+
+    if args.command == "teacher-label-stats":
+        summary = summarize_teacher_label_file(
+            resolve_label_path(config.data),
+            max_samples=config.data.max_samples,
+        )
+        print(format_teacher_label_summary(summary))
         return
 
     if args.command == "validate-labels":

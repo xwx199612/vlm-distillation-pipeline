@@ -71,7 +71,7 @@ def test_string_list_teacher_answer_is_converted_to_object_list():
 
     assert normalized == {
         "elements": [
-            {"focused": False, "text": "Search", "type": "tab"},
+            {"focused": False, "text": "Search", "type": "input"},
             {"focused": False, "text": "Home", "type": "tab"},
         ]
     }
@@ -86,7 +86,7 @@ def test_teacher_tokens_are_recomputed_after_normalization():
 
     assert row is not None
     assert json.loads(row["teacher_answer"]) == {
-        "elements": [{"focused": False, "text": "Search", "type": "tab"}]
+        "elements": [{"focused": False, "text": "Search", "type": "input"}]
     }
     assert row["teacher_tokens"] == [ord(char) for char in row["teacher_answer"]]
     assert row["teacher_tokens"] != [999]
@@ -95,7 +95,7 @@ def test_teacher_tokens_are_recomputed_after_normalization():
 def test_validate_teacher_output_file_checks_decoded_tokens_against_final_answer(tmp_path: Path):
     answer = _normalize_teacher_answer(
         _sample(),
-        '{"elements":[{"text":"Search","type":"tab","focused":false}]}',
+        '{"elements":[{"text":"Search","type":"input","focused":false}]}',
     )
     label_path = tmp_path / "labels.jsonl"
     label_path.write_text(
@@ -148,3 +148,47 @@ def test_validate_teacher_output_file_ignores_im_end_in_decode_comparison(tmp_pa
     )
 
     assert summary["answer_token_mismatch_rows"] == 0
+
+
+def test_schema_word_elements_are_dropped_and_unknown_types_are_repaired():
+    raw_answer = json.dumps(
+        {
+            "elements": [
+                {"text": "focused", "type": "unknown", "focused": False},
+                {"text": "Home", "type": "unknown", "focused": True},
+                {"text": "Details", "type": "unknown", "focused": False},
+                {"text": "Spotify", "type": "unknown", "focused": False},
+                {"text": "Program Guide", "type": "unknown", "focused": False},
+                {"text": "Recommended Movies", "type": "unknown", "focused": False},
+                {"text": "Mystery Label", "type": "unknown", "focused": False},
+            ]
+        }
+    )
+
+    normalized = json.loads(_normalize_teacher_answer(_sample(), raw_answer))
+
+    assert normalized == {
+        "elements": [
+            {"focused": True, "text": "Home", "type": "tab"},
+            {"focused": False, "text": "Details", "type": "button"},
+            {"focused": False, "text": "Spotify", "type": "app_icon"},
+            {"focused": False, "text": "Program Guide", "type": "menu_item"},
+            {"focused": False, "text": "Recommended Movies", "type": "tile"},
+            {"focused": False, "text": "Mystery Label", "type": "other"},
+        ]
+    }
+
+
+def test_fallback_string_labels_use_repaired_types_not_unknown():
+    raw_answer = '{"elements":["focused","Search","Netflix","+","Channel Setup"]}'
+
+    normalized = json.loads(_normalize_teacher_answer(_sample(), raw_answer))
+
+    assert normalized == {
+        "elements": [
+            {"focused": False, "text": "Search", "type": "input"},
+            {"focused": False, "text": "Netflix", "type": "app_icon"},
+            {"focused": False, "text": "+", "type": "button"},
+            {"focused": False, "text": "Channel Setup", "type": "menu_item"},
+        ]
+    }

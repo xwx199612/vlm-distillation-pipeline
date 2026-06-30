@@ -713,7 +713,25 @@ def _extract_ollama_text(data: dict) -> str:
     raise RuntimeError(f"Could not parse Ollama response payload: {data}")
 
 
-_COMMON_TOP_TABS = {"search", "home", "shop", "discover", "apps"}
+_COMMON_TOP_TABS = {"home", "shop", "discover", "apps"}
+_SCREEN_SCHEMA_WORDS = {
+    "text",
+    "type",
+    "focused",
+    "true",
+    "false",
+    "elements",
+}
+_KNOWN_APP_NAMES = {
+    "netflix",
+    "youtube",
+    "prime video",
+    "sony select",
+    "music",
+    "line tv",
+    "spotify",
+    "iqiyi",
+}
 _SCREEN_SCHEMA_LABELS = {
     "",
     "true",
@@ -886,7 +904,7 @@ def _normalize_screen_elements(raw_elements: object) -> list[dict[str, object]]:
             continue
 
         cleaned_label = _clean_screen_label(str(label))
-        if not cleaned_label or _is_screen_schema_label(cleaned_label):
+        if not cleaned_label or _should_drop_screen_element_label(cleaned_label):
             continue
 
         lowered = cleaned_label.lower()
@@ -894,8 +912,7 @@ def _normalize_screen_elements(raw_elements: object) -> list[dict[str, object]]:
             continue
         seen.add(lowered)
         normalized_type = _normalize_screen_element_type(element_type)
-        if lowered in _COMMON_TOP_TABS and normalized_type in {"unknown", "other", "input"}:
-            normalized_type = "tab"
+        normalized_type = _repair_screen_element_type(cleaned_label, normalized_type)
         elements.append(
             {
                 "text": cleaned_label,
@@ -913,7 +930,7 @@ def _extract_candidate_labels(text: str) -> list[str]:
     seen: set[str] = set()
     for candidate in candidates:
         cleaned = _clean_screen_label(candidate)
-        if not cleaned or _is_screen_schema_label(cleaned):
+        if not cleaned or _should_drop_screen_element_label(cleaned):
             continue
         lowered = cleaned.lower()
         if lowered in seen:
@@ -926,7 +943,8 @@ def _extract_candidate_labels(text: str) -> list[str]:
 def _labels_to_screen_elements(labels: list[str]) -> list[dict[str, object]]:
     elements: list[dict[str, object]] = []
     for label in labels:
-        elements.append({"text": label, "type": "unknown", "focused": False})
+        normalized_type = _repair_screen_element_type(label, "unknown")
+        elements.append({"text": label, "type": normalized_type, "focused": False})
     return elements
 
 
@@ -975,6 +993,43 @@ def _normalize_screen_element_type(value: object) -> str:
         return "other"
 
     return "other"
+
+
+def _should_drop_screen_element_label(label: str) -> bool:
+    lowered = label.strip().lower()
+    return lowered in _SCREEN_SCHEMA_WORDS or _is_screen_schema_label(label)
+
+
+def _repair_screen_element_type(label: str, normalized_type: str) -> str:
+    lowered = label.strip().lower()
+    heuristic_type = _infer_screen_element_type_from_text(label)
+
+    if lowered in _COMMON_TOP_TABS and normalized_type in {"unknown", "other", "input"}:
+        return "tab"
+    if normalized_type == "unknown":
+        if heuristic_type != "unknown":
+            return heuristic_type
+        return "other"
+    return normalized_type
+
+
+def _infer_screen_element_type_from_text(label: str) -> str:
+    lowered = label.strip().lower()
+    if not lowered:
+        return "unknown"
+    if lowered in {"home", "shop", "discover", "apps"}:
+        return "tab"
+    if lowered == "search":
+        return "input"
+    if lowered in {"details", "dismiss", "+"}:
+        return "button"
+    if lowered in _KNOWN_APP_NAMES:
+        return "app_icon"
+    if any(token in lowered for token in ("channel", "setup", "program", "labels", "adjustment", "type")):
+        return "menu_item"
+    if any(token in lowered for token in ("recommended", "popular", "top selling", "movie", "show")):
+        return "tile"
+    return "unknown"
 
 
 def _normalize_screen_element_focused(value: object) -> bool:

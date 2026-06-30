@@ -129,8 +129,18 @@ distillation:
     * If the text is unreadable but the element is clearly interactive, use a short
     visual name.
 
+    * Use `"unknown"` only when the element is clearly interactive but its role truly
+    cannot be inferred.
+
+    * For readable UI labels, always choose the closest allowed type.
+
+    * If unsure between `"unknown"` and `"other"`, use `"other"`.
+
     * Each element must be an object with exactly these fields: `"text"`, `"type"`,
     and `"focused"`.
+
+    * Never output schema words as UI elements: `"text"`, `"type"`, `"focused"`, `"true"`,
+    `"false"`, `"elements"`.
 
 
     The `"type"` field is a closed enum.
@@ -163,6 +173,21 @@ distillation:
     * setting, settings -> "icon"
 
     * text, label, image -> "other"
+
+    * Home, Shop, Discover, Apps -> "tab"
+
+    * Search -> "input" or "icon"
+
+    * Details, Dismiss -> "button"
+
+    * Netflix, YouTube, Prime Video, Sony Select, Music, LINE TV, Spotify, iQIYI ->
+    "app_icon"
+
+    * + -> "button"
+
+    * Recommended, Popular, Top selling, movie cards, show cards -> "tile"
+
+    * settings rows, channel, setup, program, labels, adjustment, type -> "menu_item"
 
     * if unsure -> "other"
 

@@ -2,7 +2,7 @@ seed: 42
 
 options:
   task_name: parsing
-  quality: 480p
+  quality: 1080p
   teacher_quantization: 8bit
   student_quantization: 4bit
   # Derived automatically:
@@ -12,7 +12,7 @@ data:
   manifest_path: outputs/switch-kd/{task_name}_infer_manifest.jsonl
   distill_path: outputs/switch-kd/{task_name}_switch_kd_{response_profile}.jsonl
   label_path: outputs/switch-kd/{task_name}_teacher_labels_{label_profile}.jsonl
-  prediction_path: outputs/switch-kd/{task_name}_switch_kd_{response_profile}/student_base3B_predictions.jsonl
+  prediction_path: outputs/switch-kd/{task_name}_switch_kd_{response_profile}/student_predictions.jsonl
   eval_path: outputs/switch-kd/{task_name}_switch_kd_{response_profile}/student_eval_report.json
   image_dir: /home/phison/vlm_distill/validation_data
   image_root: .
@@ -32,17 +32,17 @@ student:
   model_name: Qwen/Qwen2.5-VL-3B-Instruct
   output_dir: outputs/switch-kd/{task_name}_switch_kd_{response_profile}
   adapter_dir: outputs/switch-kd/{task_name}_switch_kd_{response_profile}/adapter
-  inference_adapter_path: 
-
+  inference_adapter_path: outputs/switch-kd/{task_name}_switch_kd_{response_profile}/adapter
   # Optional. Leave empty to load from model_name.
   # Use this only if you already saved a merged full model somewhere.
   inference_model_path:
 
   device_map: auto
   quantization: "{student_quantization}"
+  attn_implementation: sdpa
 
   # Prediction adapter controls:
-  load_adapter: false
+  load_adapter: true
 
   # false = base model + PEFT adapter wrapper
   # true  = merge adapter into base model before generate
