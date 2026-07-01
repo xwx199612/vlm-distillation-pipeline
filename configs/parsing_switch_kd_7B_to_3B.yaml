@@ -40,11 +40,13 @@ student:
   model_name: /home/phison/vlm_distill/models/Qwen2.5-VL-3B-Instruct
   output_dir: outputs/switch-kd_debug/{task_name}_switch_kd_{response_profile}
   adapter_dir: outputs/switch-kd_debug/{task_name}_switch_kd_{response_profile}/adapter
+  merged_model_path: outputs/switch-kd_debug/{task_name}_switch_kd_{response_profile}/merged_model
 
   # Prediction-time model/adapter controls.
-  # Leave inference_model_path empty to load the base model from model_name.
+  # Leave inference_model_path empty to let predict prefer merged_model_path when it exists,
+  # otherwise fall back to model_name.
   inference_model_path:
-  inference_adapter_path: outputs/switch-kd_debug/{task_name}_switch_kd_{response_profile}/adapter
+  inference_adapter_path:
   load_adapter: true
   merge_adapter: false
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -68,14 +68,14 @@ class HuggingFaceStudent:
                 "Install torch, transformers and bitsandbytes to use the Hugging Face student backend."
             ) from exc
 
-        model_path = resolve_model_path(
-            config.student.inference_model_path or config.student.model_name
-        )
+        model_selection = _resolve_prediction_model_selection(config)
+        model_path = model_selection.model_path
         adapter_path = _resolve_prediction_adapter_path(config)
-        should_load_adapter = _should_load_prediction_adapter(config)
+        should_load_adapter = model_selection.should_load_adapter
         print(
             "Initializing Hugging Face student backend: "
-            f"model={model_path}, "
+            f"prediction_model_source={model_selection.source}, "
+            f"model_path={model_path}, "
             f"adapter={adapter_path if should_load_adapter else 'disabled'}, "
             f"load_adapter={config.student.load_adapter}, "
             f"merge_adapter={config.student.merge_adapter}, "
@@ -178,6 +178,38 @@ def build_student_backend(config: PipelineConfig) -> StudentBackend:
     if config.student.model_name.startswith("mock-"):
         return MockStudent()
     return HuggingFaceStudent(config)
+
+
+@dataclass(frozen=True)
+class PredictionModelSelection:
+    source: str
+    model_path: str
+    should_load_adapter: bool
+
+
+def _resolve_prediction_model_selection(config: PipelineConfig) -> PredictionModelSelection:
+    inference_model_path = (config.student.inference_model_path or "").strip()
+    merged_model_path = config.student.merged_model_path
+
+    if inference_model_path:
+        return PredictionModelSelection(
+            source="inference_model_path",
+            model_path=resolve_model_path(inference_model_path),
+            should_load_adapter=_should_load_prediction_adapter(config),
+        )
+
+    if merged_model_path is not None and merged_model_path.exists():
+        return PredictionModelSelection(
+            source="merged_model_path",
+            model_path=resolve_model_path(str(merged_model_path)),
+            should_load_adapter=False,
+        )
+
+    return PredictionModelSelection(
+        source="base_model_plus_adapter",
+        model_path=resolve_model_path(config.student.model_name),
+        should_load_adapter=_should_load_prediction_adapter(config),
+    )
 
 
 def _should_load_prediction_adapter(config: PipelineConfig) -> bool:

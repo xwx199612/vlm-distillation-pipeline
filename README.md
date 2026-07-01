@@ -621,17 +621,56 @@ Adapter / merge guidance:
 Export a standalone merged student model for inference:
 
 ```bash
-vlm-distill merge-adapter --config configs/parsing_switch_kd_infer.yaml
+vlm-distill merge-adapter --config configs/parsing_switch_kd.yaml
 ```
 
-This command loads the base model from `student.inference_model_path` or `student.model_name`, loads the PEFT adapter from `student.inference_adapter_path` or `student.adapter_dir`, and writes the merged model to `student.merged_model_path` or `student.output_dir/merged_model`.
+Use one main YAML for both training and inference. The recommended customer-facing flow is:
 
-After merging, switch inference config to the merged model and disable adapter loading:
+```bash
+vlm-distill create-manifest --config configs/parsing_switch_kd.yaml --split training
+vlm-distill label --config configs/parsing_switch_kd.yaml
+vlm-distill switch-logits --config configs/parsing_switch_kd.yaml
+vlm-distill train --config configs/parsing_switch_kd.yaml
+
+vlm-distill merge-adapter --config configs/parsing_switch_kd.yaml
+
+vlm-distill create-manifest --config configs/parsing_switch_kd.yaml --split inference
+vlm-distill predict --config configs/parsing_switch_kd.yaml
+```
+
+Do not maintain separate merge and inference configs such as `parsing_switch_kd_merge.yaml` and `parsing_switch_kd_infer.yaml`.
+
+`merge-adapter` always loads the base model from `student.model_name`, loads the PEFT adapter from `student.inference_adapter_path` or `student.adapter_dir`, and writes the merged model to `student.merged_model_path` or `student.output_dir/merged_model`.
+
+`predict` chooses the model source automatically:
+
+```text
+if student.inference_model_path is set:
+    use inference_model_path
+    adapter behavior follows load_adapter / merge_adapter
+
+elif student.merged_model_path exists:
+    use merged_model_path
+    disable adapter loading
+
+else:
+    use student.model_name
+    adapter behavior follows load_adapter / merge_adapter
+```
+
+When `predict` uses `student.merged_model_path`, it disables adapter loading to avoid applying the adapter twice.
+
+Recommended single-YAML student section:
 
 ```yaml
 student:
-  inference_model_path: outputs/.../merged_model
-  load_adapter: false
+  model_name: /home/phison/vlm_distill/models/Qwen3-VL-8B-Instruct
+  output_dir: outputs/switch-kd/{task_name}_switch_kd_{response_profile}
+  adapter_dir: outputs/switch-kd/{task_name}_switch_kd_{response_profile}/adapter
+  merged_model_path: outputs/switch-kd/{task_name}_switch_kd_{response_profile}/merged_model
+  inference_model_path:
+  inference_adapter_path:
+  load_adapter: true
   merge_adapter: false
 ```
 
@@ -665,9 +704,13 @@ teacher:
 
 student:
   model_name: Qwen/Qwen2.5-VL-3B-Instruct
-  inference_model_path: outputs/student/merged_response_KD_480p_8bit
   output_dir: outputs/parsing_response_480p_8bit_student_4bit
   adapter_dir: outputs/parsing_response_480p_8bit_student_4bit/adapter
+  merged_model_path: outputs/student/merged_response_KD_480p_8bit
+  inference_model_path:
+  inference_adapter_path:
+  load_adapter: true
+  merge_adapter: false
   quantization: none
 
 distillation:
@@ -682,6 +725,14 @@ Run batch prediction:
 ```powershell
 vlm-distill predict \
   --config your_merged_eval_config.yaml
+```
+
+If `outputs/student/merged_response_KD_480p_8bit` already exists and `inference_model_path` is empty, `predict` will load that merged model automatically and log:
+
+```text
+prediction_model_source=merged_model_path
+model_path=outputs/student/merged_response_KD_480p_8bit
+adapter=disabled
 ```
 
 Typical output:

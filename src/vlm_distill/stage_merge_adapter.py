@@ -20,9 +20,7 @@ def merge_student_adapter(config: PipelineConfig) -> Path:
             "Install torch, transformers, and peft to merge a student adapter."
         ) from exc
 
-    base_model_path = resolve_model_path(
-        config.student.inference_model_path or config.student.model_name
-    )
+    base_model_path = resolve_model_path(config.student.model_name)
     adapter_path = config.student.inference_adapter_path or config.student.adapter_dir
     output_path = config.student.merged_model_path or config.student.output_dir / "merged_model"
 
