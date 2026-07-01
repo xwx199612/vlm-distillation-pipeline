@@ -3,11 +3,15 @@ seed: 42
 options:
   task_name: parsing
   quality: 1080p
-  teacher_quantization: 8bit
+  teacher_quantization: 4bit
   student_quantization: 4bit
   # Derived automatically:
   # label_profile = {quality}_{teacher_quantization}
   # response_profile = {quality}_{teacher_quantization}_student_{student_quantization}
+
+# This config is intended for Qwen3-VL-32B-Instruct -> Qwen3-VL-8B-Instruct.
+# The current loaders resolve local model paths and load with local_files_only=True internally.
+# Do not add local_files_only / trust_remote_code here unless config_schema.py is updated.
 
 data:
   manifest_path: outputs/switch-kd/{task_name}_manifest.jsonl
@@ -22,7 +26,8 @@ data:
   prediction_path: outputs/switch-kd/{task_name}_switch_kd_{response_profile}/student_predictions.jsonl
   image_dir: /home/phison/vlm_distill/TV_data
   image_root: .
-  max_samples: 2
+  # Keep this small for the first smoke test. Set to empty/null for full training.
+  max_samples: 
 
 teacher:
   backend: hf
@@ -32,13 +37,10 @@ teacher:
   quantization: "{teacher_quantization}"
   attn_implementation: sdpa
   temperature: 0.0
-  local_files_only: true
-  trust_remote_code: true
   max_new_tokens: 512
   image_resize: "{quality}"
 
 student:
-  backend: hf
   model_name: /home/phison/vlm_distill/models/Qwen3-VL-8B-Instruct
   output_dir: outputs/switch-kd/{task_name}_switch_kd_{response_profile}
   adapter_dir: outputs/switch-kd/{task_name}_switch_kd_{response_profile}/adapter
@@ -61,8 +63,6 @@ student:
     - v_proj
     - o_proj
   quantization: "{student_quantization}"
-  local_files_only: true
-  trust_remote_code: true
   attn_implementation: sdpa
 
 training:
@@ -74,8 +74,9 @@ training:
   max_steps:
   log_every: 50
   save_every: 1000
-  mixed_precision: bf16           # 伺服器 GPU 支援 bf16 時 否則為 fp16
-  gradient_checkpointing: false   # 只有 VRAM 夠時才關
+  mixed_precision: bf16
+  # Safer default for Qwen3-VL-8B + 1080p + max_length=4096.
+  gradient_checkpointing: true
   image_resize: "{quality}"
   max_length: 4096
   freeze_vision_tower: true
@@ -94,11 +95,11 @@ distillation:
 
     Task:
     {query}
-    
+
     Identify all visible interactive UI elements in this screenshot.
-    
+
     Interactive elements include:
-    
+
     * tabs
     * buttons
     * app icons
@@ -110,17 +111,17 @@ distillation:
     * search boxes or text inputs
     * clickable text links
     * settings, account, search, or navigation icons
-    
+
     Exclude:
-    
+
     * movie descriptions
     * recommendation summaries
     * long informational text
     * advertisements
     * decorative or non-interactive text
-    
+
     Rules:
-    
+
     * Prefer recall over brevity.
     * Do not return only the top navigation bar.
     * Include every visible app icon, tile, card, tab, button, menu item, and focused item.
@@ -133,17 +134,17 @@ distillation:
     * If unsure between `"unknown"` and `"other"`, use `"other"`.
     * Each element must be an object with exactly these fields: `"text"`, `"type"`, and `"focused"`.
     * Never output schema words as UI elements: `"text"`, `"type"`, `"focused"`, `"true"`, `"false"`, `"elements"`.
-    
+
     The `"type"` field is a closed enum.
     For every element, `"type"` MUST be exactly one of:
     ["tab", "button", "app_icon", "app_tile", "menu_item", "tile", "toggle", "input", "icon", "link", "other", "unknown"]
-    
+
     Do not invent new type names.
     Do not output values such as:
     "card", "movie", "navigation", "nav", "search_bar", "setting", "settings", "text", "label", "image", "poster", "banner", or "carousel".
-    
+
     Map ambiguous UI elements to the closest allowed type:
-    
+
     * card, movie, poster, banner, recommendation, content, carousel -> "tile"
     * app, application -> "app_icon"
     * navigation, nav -> "tab"
@@ -158,13 +159,13 @@ distillation:
     * Recommended, Popular, Top selling, movie cards, show cards -> "tile"
     * settings rows, channel, setup, program, labels, adjustment, type -> "menu_item"
     * if unsure -> "other"
-    
+
     Return raw JSON only.
     Do not explain.
     Do not use markdown.
     Do not include comments.
     Do not include trailing commas.
-    
+
     Use this schema:
     {{
     "elements": [

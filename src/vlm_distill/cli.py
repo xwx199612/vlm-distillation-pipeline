@@ -9,6 +9,7 @@ from .data_manifest import validate_manifest
 from .hf_runtime import configure_hf_offline_mode
 from .manifest_builder import create_manifest_from_config, infer_manifest_task_from_config_path
 from .stage_evaluation import evaluate
+from .stage_merge_adapter import merge_student_adapter
 from .stage_prediction_evaluation import evaluate_predictions
 from .stage_student_prediction import create_student_predictions
 from .stage_teacher_precompute import create_teacher_precompute_dataset
@@ -34,6 +35,7 @@ def main() -> None:
         "predict",
         "switch-logits",
         "train",
+        "merge-adapter",
         "evaluate",
         "evaluate-predictions",
     ):
@@ -142,6 +144,10 @@ def main() -> None:
     if args.command == "train":
         artifact = train_student(config)
         print(f"OK student artifact written: {artifact}")
+        return
+
+    if args.command == "merge-adapter":
+        merge_student_adapter(config)
         return
 
     if args.command == "evaluate":

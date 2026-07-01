@@ -618,6 +618,23 @@ Adapter / merge guidance:
 * Only merge for deployment, and always write the merged weights into a new directory such as `outputs/.../merged-*`.
 * Do not write merged weights back into the base model directory. Keeping the original student base untouched lets you merge other adapters later.
 
+Export a standalone merged student model for inference:
+
+```bash
+vlm-distill merge-adapter --config configs/parsing_switch_kd_infer.yaml
+```
+
+This command loads the base model from `student.inference_model_path` or `student.model_name`, loads the PEFT adapter from `student.inference_adapter_path` or `student.adapter_dir`, and writes the merged model to `student.merged_model_path` or `student.output_dir/merged_model`.
+
+After merging, switch inference config to the merged model and disable adapter loading:
+
+```yaml
+student:
+  inference_model_path: outputs/.../merged_model
+  load_adapter: false
+  merge_adapter: false
+```
+
 Parallel teacher precompute helper:
 
 ```bash

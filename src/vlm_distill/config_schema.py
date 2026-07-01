@@ -45,6 +45,7 @@ class StudentConfig:
     model_name: str
     output_dir: Path
     adapter_dir: Path
+    merged_model_path: Path | None = None
     inference_adapter_path: Path | None = None
     inference_model_path: str | None = None
     device_map: str | None = "auto"
@@ -240,6 +241,11 @@ def _build_student_config(raw: dict[str, Any]) -> StudentConfig:
     values = dict(raw)
     for key in ("output_dir", "adapter_dir"):
         values[key] = remap_output_path(Path(values[key]))
+    merged_model_path = values.get("merged_model_path")
+    if merged_model_path:
+        values["merged_model_path"] = remap_output_path(Path(merged_model_path))
+    else:
+        values["merged_model_path"] = None
     inference_adapter_path = values.get("inference_adapter_path")
     if inference_adapter_path:
         values["inference_adapter_path"] = remap_output_path(Path(inference_adapter_path))
