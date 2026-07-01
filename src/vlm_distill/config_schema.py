@@ -294,8 +294,8 @@ def _build_distillation_config(raw: dict[str, Any]) -> DistillationConfig:
     if dbild_top_k_mode not in {"fixed", "kneedle"}:
         raise ValueError("distillation.dbild_top_k_mode must be one of: fixed, kneedle.")
     dbild_kl_mode = values.get("dbild_kl_mode", "symmetric")
-    if dbild_kl_mode not in {"symmetric", "reverse"}:
-        raise ValueError("distillation.dbild_kl_mode must be one of: symmetric, reverse.")
+    if dbild_kl_mode not in {"symmetric", "reverse", "forward"}:
+        raise ValueError("distillation.dbild_kl_mode must be one of: symmetric, reverse, forward.")
     dbild_min_top_k = int(values.get("dbild_min_top_k", 4))
     if dbild_min_top_k < 1:
         raise ValueError("distillation.dbild_min_top_k must be >= 1.")

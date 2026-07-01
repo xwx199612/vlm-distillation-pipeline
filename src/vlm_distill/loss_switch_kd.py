@@ -433,6 +433,8 @@ def dynamic_bidirectional_logits_difference(
         token_loss = 0.5 * (forward_kl + reverse_kl) * (safe_temperature**2)
     elif kl_mode == "reverse":
         token_loss = reverse_kl * (safe_temperature**2)
+    elif kl_mode == "forward":
+        token_loss = forward_kl * (safe_temperature**2)
     else:
         raise ValueError(f"Unsupported kl_mode: {kl_mode}")
 
@@ -626,6 +628,8 @@ def _compact_bidirectional_logits_difference(
         token_loss = 0.5 * (forward_kl + reverse_kl) * (safe_temperature**2)
     elif kl_mode == "reverse":
         token_loss = reverse_kl * (safe_temperature**2)
+    elif kl_mode == "forward":
+        token_loss = forward_kl * (safe_temperature**2)
     else:
         raise ValueError(f"Unsupported kl_mode: {kl_mode}")
 
@@ -661,3 +665,115 @@ def _causal_lm_loss(logits, labels):
         shift_labels.view(-1),
         ignore_index=-100,
     )
+
+
+def full_dynamic_bidirectional_logits_difference(
+    *,
+    reference_logits,
+    target_logits,
+    attention_mask=None,
+    temperature: float = 2.0,
+    top_k: int = 64,
+    top_k_mode: str = "fixed",
+    kneedle_candidate_k: int = 256,
+    min_top_k: int = 4,
+    max_top_k: int | None = None,
+    kl_mode: str = "symmetric",
+):
+    import torch
+    import torch.nn.functional as F
+
+    if isinstance(reference_logits, dict) or isinstance(target_logits, dict):
+        raise TypeError("full_dynamic_bidirectional_logits_difference requires dense full logits, not compact dicts.")
+    if reference_logits.shape != target_logits.shape:
+        raise ValueError(
+            "reference_logits and target_logits must have the same shape. "
+            f"Got {tuple(reference_logits.shape)} and {tuple(target_logits.shape)}."
+        )
+    if reference_logits.ndim != 3:
+        raise ValueError(
+            "reference_logits and target_logits must have rank 3 [batch, seq, vocab]. "
+            f"Got rank {reference_logits.ndim}."
+        )
+
+    safe_temperature = max(float(temperature), 1e-6)
+
+    def _select_indices(selector_logits):
+        vocab_size = int(selector_logits.shape[-1])
+        if top_k_mode == "fixed":
+            effective_top_k = min(int(top_k), vocab_size)
+            if effective_top_k < 1:
+                raise ValueError("top_k must be >= 1 for full DBiLD.")
+            indices = torch.topk(selector_logits, k=effective_top_k, dim=-1).indices
+            active = torch.ones_like(indices, dtype=torch.bool)
+            return indices, active
+        if top_k_mode == "kneedle":
+            indices, active, _token_k = _kneedle_topk_indices(
+                selector_logits,
+                candidate_k=kneedle_candidate_k,
+                min_top_k=min_top_k,
+                max_top_k=max_top_k,
+            )
+            return indices, active
+        raise ValueError(f"Unsupported top_k_mode: {top_k_mode}")
+
+    def _branch_loss(selector_logits, reference_source_logits, target_source_logits):
+        branch_indices, branch_active = _select_indices(selector_logits)
+        reference_selected = torch.gather(reference_source_logits, dim=-1, index=branch_indices)
+        target_selected = torch.gather(target_source_logits, dim=-1, index=branch_indices)
+
+        reference_floor = _finite_inactive_floor(
+            reference_selected,
+            branch_active,
+            margin=30.0,
+            fallback=-30.0,
+        )
+        target_floor = _finite_inactive_floor(
+            target_selected,
+            branch_active,
+            margin=30.0,
+            fallback=-30.0,
+        )
+        scaled_reference = torch.where(
+            branch_active,
+            reference_selected / safe_temperature,
+            reference_floor / safe_temperature,
+        )
+        scaled_target = torch.where(
+            branch_active,
+            target_selected / safe_temperature,
+            target_floor / safe_temperature,
+        )
+
+        reference_log_probs = F.log_softmax(scaled_reference, dim=-1)
+        target_log_probs = F.log_softmax(scaled_target, dim=-1)
+        reference_probs = reference_log_probs.exp()
+        target_probs = target_log_probs.exp()
+
+        forward_kl = (reference_probs * (reference_log_probs - target_log_probs)).sum(dim=-1)
+        reverse_kl = (target_probs * (target_log_probs - reference_log_probs)).sum(dim=-1)
+        if kl_mode == "symmetric":
+            token_loss = 0.5 * (forward_kl + reverse_kl) * (safe_temperature**2)
+        elif kl_mode == "forward":
+            token_loss = forward_kl * (safe_temperature**2)
+        elif kl_mode == "reverse":
+            token_loss = reverse_kl * (safe_temperature**2)
+        else:
+            raise ValueError(f"Unsupported kl_mode: {kl_mode}")
+
+        active_tokens = branch_active.any(dim=-1).to(token_loss.dtype)
+        token_loss = token_loss * active_tokens
+        if attention_mask is not None:
+            if attention_mask.shape != token_loss.shape:
+                raise ValueError(
+                    "attention_mask must match [batch, seq] token loss shape. "
+                    f"Got {tuple(attention_mask.shape)} and {tuple(token_loss.shape)}."
+                )
+            token_loss = token_loss * attention_mask.to(token_loss.dtype)
+            normalizer = attention_mask.to(token_loss.dtype) * active_tokens
+            return token_loss.sum() / normalizer.sum().clamp_min(1.0)
+        return token_loss.sum() / active_tokens.sum().clamp_min(1.0)
+
+    reference_guided = _branch_loss(reference_logits, reference_logits, target_logits)
+    target_guided = _branch_loss(target_logits, reference_logits, target_logits)
+    return 0.5 * (reference_guided + target_guided)
