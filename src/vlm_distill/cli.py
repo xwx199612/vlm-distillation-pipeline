@@ -4,7 +4,13 @@ import argparse
 from pathlib import Path
 
 from . import teacher_validation
-from .config_schema import load_config, resolve_label_path, resolve_prediction_path
+from .config_schema import (
+    load_config,
+    resolve_inference_manifest_path,
+    resolve_label_path,
+    resolve_prediction_path,
+    resolve_training_manifest_path,
+)
 from .data_manifest import validate_manifest
 from .hf_runtime import configure_hf_offline_mode
 from .manifest_builder import create_manifest_from_config, infer_manifest_task_from_config_path
@@ -26,6 +32,11 @@ def main() -> None:
 
     create_manifest_parser = subparsers.add_parser("create-manifest")
     create_manifest_parser.add_argument("--config", type=Path, required=True)
+    create_manifest_parser.add_argument(
+        "--split",
+        choices=("training", "inference"),
+        required=True,
+    )
     create_manifest_parser.add_argument("--recursive", action="store_true")
 
     for command in (
@@ -60,6 +71,7 @@ def main() -> None:
         output_path = create_manifest_from_config(
             config=config,
             task=task,
+            split=args.split,
             recursive=args.recursive,
         )
         print(f"OK manifest written: {output_path}")
@@ -68,12 +80,13 @@ def main() -> None:
     config = load_config(args.config)
 
     if args.command == "validate-manifest":
+        manifest_path = resolve_training_manifest_path(config.data)
         samples = validate_manifest(
-            config.data.manifest_path,
+            manifest_path,
             image_root=config.data.image_root,
             max_samples=config.data.max_samples,
         )
-        print(f"OK validated manifest samples={len(samples)} path={config.data.manifest_path}")
+        print(f"OK validated manifest samples={len(samples)} path={manifest_path}")
         return
 
     if args.command == "validate-teacher":
@@ -107,8 +120,9 @@ def main() -> None:
         raise SystemExit("validate-labels is deprecated. Use validate-teacher.")
 
     if args.command == "label":
+        manifest_path = resolve_training_manifest_path(config.data)
         samples = validate_manifest(
-            config.data.manifest_path,
+            manifest_path,
             image_root=config.data.image_root,
             max_samples=config.data.max_samples,
         )
@@ -117,8 +131,9 @@ def main() -> None:
         return
 
     if args.command == "teacher-precompute":
+        manifest_path = resolve_training_manifest_path(config.data)
         samples = validate_manifest(
-            config.data.manifest_path,
+            manifest_path,
             image_root=config.data.image_root,
             max_samples=config.data.max_samples,
         )
@@ -127,8 +142,9 @@ def main() -> None:
         return
 
     if args.command == "predict":
+        manifest_path = resolve_inference_manifest_path(config.data)
         samples = validate_manifest(
-            config.data.manifest_path,
+            manifest_path,
             image_root=config.data.image_root,
             max_samples=config.data.max_samples,
         )

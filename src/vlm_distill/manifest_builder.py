@@ -4,7 +4,14 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .config_schema import PipelineConfig, remap_output_path
+from .config_schema import (
+    PipelineConfig,
+    remap_output_path,
+    resolve_inference_image_dir,
+    resolve_inference_manifest_path,
+    resolve_training_image_dir,
+    resolve_training_manifest_path,
+)
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
@@ -39,12 +46,23 @@ def infer_manifest_task_from_config_path(config_path: Path) -> str:
 def create_manifest_from_config(
     config: PipelineConfig,
     task: str,
+    split: str,
     recursive: bool = False,
 ) -> Path:
+    if split == "training":
+        image_dir = resolve_training_image_dir(config.data) or DEFAULT_IMAGE_DIR
+        output_path = resolve_training_manifest_path(config.data)
+    elif split == "inference":
+        image_dir = resolve_inference_image_dir(config.data) or DEFAULT_IMAGE_DIR
+        output_path = resolve_inference_manifest_path(config.data)
+    else:
+        raise ValueError(f"Unsupported manifest split: {split}")
+
     if task == "parsing":
         return create_parsing_manifest(
-            image_dir=config.data.image_dir or DEFAULT_IMAGE_DIR,
-            output_path=config.data.manifest_path,
+            image_dir=image_dir,
+            output_path=output_path,
+            split=split,
             recursive=recursive,
         )
 
@@ -55,7 +73,8 @@ def create_manifest_from_config(
 
         return create_grounding_manifest(
             source_path=source_path,
-            output_path=config.data.manifest_path,
+            output_path=output_path,
+            split=split,
         )
 
     raise ValueError(
@@ -67,6 +86,7 @@ def create_manifest_from_config(
 def create_parsing_manifest(
     image_dir: Path,
     output_path: Path,
+    split: str,
     recursive: bool = False,
 ) -> Path:
     query = TASK_DEFAULTS["parsing"]["query"]
@@ -97,8 +117,10 @@ def create_parsing_manifest(
             }
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-    print(f"Created parsing manifest: {output_path}")
+    print(f"Selected split: {split}")
     print(f"Image dir: {image_dir}")
+    print(f"Output manifest path: {output_path}")
+    print(f"Created parsing manifest: {output_path}")
     print(f"Samples: {len(images)}")
 
     return output_path
@@ -107,6 +129,7 @@ def create_parsing_manifest(
 def create_grounding_manifest(
     source_path: Path,
     output_path: Path,
+    split: str,
 ) -> Path:
     if not source_path.exists():
         raise FileNotFoundError(
@@ -142,6 +165,8 @@ def create_grounding_manifest(
         for row in grounding_rows:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
+    print(f"Selected split: {split}")
+    print(f"Output manifest path: {output_path}")
     print(f"Created grounding manifest: {output_path}")
     print(f"Source: {source_path}")
     print(f"Samples: {len(grounding_rows)}")
@@ -225,4 +250,3 @@ def _element_label(element: Any) -> str | None:
             return label or None
 
     return None
-

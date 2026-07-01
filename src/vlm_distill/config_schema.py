@@ -10,14 +10,18 @@ import yaml
 
 @dataclass
 class DataConfig:
-    manifest_path: Path
+    training_manifest_path: Path
     distill_path: Path
+    inference_manifest_path: Path | None = None
     label_path: Path | None = None
     prediction_path: Path | None = None
     teacher_logits_path: Path | None = None
     switch_logits_path: Path | None = None
     eval_path: Path | None = None
     image_root: Path = Path(".")
+    training_image_dir: Path | None = None
+    inference_image_dir: Path | None = None
+    manifest_path: Path | None = None
     image_dir: Path | None = None
     output_dir: Path | None = None
     max_samples: int | None = None
@@ -220,15 +224,23 @@ def remap_output_path_string(value: str | None) -> str | None:
 
 def _build_data_config(raw: dict[str, Any]) -> DataConfig:
     values = dict(raw)
+    if values.get("training_manifest_path") is None and values.get("manifest_path") is not None:
+        values["training_manifest_path"] = values["manifest_path"]
+    if values.get("training_image_dir") is None and values.get("image_dir") is not None:
+        values["training_image_dir"] = values["image_dir"]
     for key in (
+        "training_manifest_path",
         "manifest_path",
         "distill_path",
+        "inference_manifest_path",
         "label_path",
         "prediction_path",
         "teacher_logits_path",
         "switch_logits_path",
         "eval_path",
         "image_root",
+        "training_image_dir",
+        "inference_image_dir",
         "image_dir",
         "output_dir",
     ):
@@ -446,6 +458,25 @@ def resolve_label_path(data: DataConfig) -> Path:
 
 def resolve_prediction_path(data: DataConfig) -> Path:
     return data.prediction_path or data.distill_path
+
+
+def resolve_training_manifest_path(data: DataConfig) -> Path:
+    path = data.training_manifest_path or data.manifest_path
+    if path is None:
+        raise ValueError("data.training_manifest_path or legacy data.manifest_path must be set.")
+    return path
+
+
+def resolve_inference_manifest_path(data: DataConfig) -> Path:
+    return data.inference_manifest_path or resolve_training_manifest_path(data)
+
+
+def resolve_training_image_dir(data: DataConfig) -> Path | None:
+    return data.training_image_dir or data.image_dir
+
+
+def resolve_inference_image_dir(data: DataConfig) -> Path | None:
+    return data.inference_image_dir or data.image_dir
 
 
 def resolve_teacher_logits_path(data: DataConfig) -> Path:

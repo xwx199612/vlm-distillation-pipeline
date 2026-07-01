@@ -14,7 +14,8 @@ options:
 # Do not add local_files_only / trust_remote_code here unless config_schema.py is updated.
 
 data:
-  manifest_path: outputs/switch-kd/{task_name}_manifest.jsonl
+  training_manifest_path: outputs/switch-kd/{task_name}_training_manifest.jsonl
+  inference_manifest_path: outputs/switch-kd/{task_name}_inference_manifest.jsonl
   distill_path: outputs/switch-kd/{task_name}_switch_kd_{response_profile}.jsonl
   # Canonical unified teacher output. Rows contain teacher_answer,
   # teacher_tokens, and teacher_logits when distillation.teacher_logits=true.
@@ -24,14 +25,15 @@ data:
   switch_logits_path: outputs/switch-kd/{task_name}_switch_logits_{response_profile}.jsonl
   eval_path: outputs/switch-kd/{task_name}_switch_kd_{response_profile}.jsonl
   prediction_path: outputs/switch-kd/{task_name}_switch_kd_{response_profile}/student_predictions.jsonl
-  image_dir: /home/phison/vlm_distill/TV_data
+  training_image_dir: /mnt/nvme0/vlm_distill/TV_data/train
+  inference_image_dir: /mnt/nvme0/vlm_distill/TV_data/inference
   image_root: .
   # Keep this small for the first smoke test. Set to empty/null for full training.
   max_samples: 2
 
 teacher:
   backend: hf
-  model_name: /home/phison/vlm_distill/models/Qwen3-VL-32B-Instruct
+  model_name: /mnt/nvme0/vlm_distill/models/Qwen3-VL-32B-Instruct
   device_map: auto
   torch_dtype: bfloat16
   quantization: "{teacher_quantization}"
@@ -41,7 +43,7 @@ teacher:
   image_resize: "{quality}"
 
 student:
-  model_name: /home/phison/vlm_distill/models/Qwen3-VL-8B-Instruct
+  model_name: /mnt/nvme0/vlm_distill/models/Qwen3-VL-8B-Instruct
   output_dir: outputs/switch-kd/{task_name}_switch_kd_{response_profile}
   adapter_dir: outputs/switch-kd/{task_name}_switch_kd_{response_profile}/adapter
   merged_model_path: outputs/switch-kd/{task_name}_switch_kd_{response_profile}/merged_model

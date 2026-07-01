@@ -183,7 +183,7 @@ vlm-distill predict \
   --config configs/parsing_response_distillation.yaml
 ```
 
-This reads `data.manifest_path` and writes predictions to `data.prediction_path` when set, otherwise `data.distill_path`.
+This reads `data.inference_manifest_path` and writes predictions to `data.prediction_path` when set, otherwise `data.distill_path`. It does not read the training manifest.
 
 ---
 
@@ -628,13 +628,11 @@ Use one main YAML for both training and inference. The recommended customer-faci
 
 ```bash
 vlm-distill create-manifest --config configs/parsing_switch_kd.yaml --split training
+vlm-distill create-manifest --config configs/parsing_switch_kd.yaml --split inference
+
 vlm-distill label --config configs/parsing_switch_kd.yaml
 vlm-distill switch-logits --config configs/parsing_switch_kd.yaml
 vlm-distill train --config configs/parsing_switch_kd.yaml
-
-vlm-distill merge-adapter --config configs/parsing_switch_kd.yaml
-
-vlm-distill create-manifest --config configs/parsing_switch_kd.yaml --split inference
 vlm-distill predict --config configs/parsing_switch_kd.yaml
 ```
 

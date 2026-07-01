@@ -14,6 +14,7 @@ from .config_schema import (
     format_prompt,
     resolve_label_path,
     resolve_switch_logits_path,
+    resolve_training_manifest_path,
 )
 from .data_manifest import VlmSample, read_jsonl, validate_manifest
 from .device_utils import (
@@ -901,7 +902,7 @@ class VisualSwitchDistiller:
 
 def create_visual_switch_dataset(config: PipelineConfig) -> Path:
     samples = validate_manifest(
-        config.data.manifest_path,
+        resolve_training_manifest_path(config.data),
         image_root=config.data.image_root,
         max_samples=config.data.max_samples,
     )

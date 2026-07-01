@@ -15,7 +15,12 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 from urllib.parse import urljoin
 
-from .config_schema import PipelineConfig, format_prompt, resolve_label_path
+from .config_schema import (
+    PipelineConfig,
+    format_prompt,
+    resolve_label_path,
+    resolve_training_manifest_path,
+)
 from .data_manifest import VlmSample, read_jsonl, validate_manifest
 from .device_utils import (
     batch_to_device,
@@ -1556,7 +1561,7 @@ class TeacherLogitsGenerator:
 def create_teacher_precompute_dataset(config: PipelineConfig, samples: list[VlmSample] | None = None) -> Path:
     require_logits = bool(getattr(config.distillation, "teacher_logits", True))
     samples = samples or validate_manifest(
-        config.data.manifest_path,
+        resolve_training_manifest_path(config.data),
         image_root=config.data.image_root,
         max_samples=config.data.max_samples,
     )
