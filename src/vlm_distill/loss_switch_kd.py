@@ -149,6 +149,40 @@ def _finite_inactive_floor(values, active_mask, *, margin, fallback):
     return torch.where(has_active, floor, fallback_floor)
 
 
+def _internal_pairwise_logits_differences(selected_logits, active_mask=None):
+    import torch
+
+    if selected_logits.ndim != 3:
+        raise ValueError(
+            "selected_logits must have shape [batch, seq, k]. "
+            f"Got {tuple(selected_logits.shape)}."
+        )
+
+    k = selected_logits.shape[-1]
+    if k < 2:
+        raise ValueError("Pairwise logits differences require at least two selected logits.")
+
+    row_idx, col_idx = torch.triu_indices(
+        k,
+        k,
+        offset=1,
+        device=selected_logits.device,
+    )
+    diffs = selected_logits[..., row_idx] - selected_logits[..., col_idx]
+
+    if active_mask is None:
+        diff_active = torch.ones_like(diffs, dtype=torch.bool)
+    else:
+        if active_mask.shape != selected_logits.shape:
+            raise ValueError(
+                "active_mask must match selected_logits shape. "
+                f"Got {tuple(active_mask.shape)} and {tuple(selected_logits.shape)}."
+            )
+        diff_active = active_mask[..., row_idx] & active_mask[..., col_idx]
+
+    return diffs, diff_active
+
+
 def _emit_reference_debug(
     *,
     label: str,
@@ -294,25 +328,6 @@ def _apply_candidate_min_prob(
     scaled_student = torch.where(informative, scaled_student, student_floor)
     scaled_reference = torch.where(informative, scaled_reference, reference_floor)
     return scaled_student, scaled_reference, informative
-
-
-def _internal_pairwise_logits_differences(selected_logits, active_mask=None):
-    import torch
-
-    k = int(selected_logits.shape[-1])
-    if k < 2:
-        raise ValueError(
-            "Pairwise logits differences require at least two selected logits. "
-            f"Got k={k}."
-        )
-
-    row_idx, col_idx = torch.triu_indices(k, k, offset=1, device=selected_logits.device)
-    diffs = selected_logits[..., row_idx] - selected_logits[..., col_idx]
-    if active_mask is None:
-        diff_active = torch.ones_like(diffs, dtype=torch.bool)
-    else:
-        diff_active = active_mask[..., row_idx] & active_mask[..., col_idx]
-    return diffs, diff_active
 
 
 def dynamic_bidirectional_logits_difference(
